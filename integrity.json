@@ -1,7 +1,7 @@
 {
-  "version": "0.4.2",
+  "version": "0.4.3",
   "files": {
-    "agent.js": "adec165678d9f379c9eb7b3da0b524a5c7f2dedc9935aafc01b2c0a8da12603a",
+    "agent.js": "d2254372894dacff870f728566c0af36355d3a31bbd113a7439f93fed22c07ee",
     "plugin.js": "bf8c8933ee4a5cbe3ceaf19d4965725b70dbfb5c97d12fe1ac74c25943ecd2e1",
     "bridge.js": "d2c63004d79a3d2dbab1435af8d2f288428f5dbdca537f2a69229b2178611571",
     "engine.js": "87656ac7188b5d94af26d112ae88c546ed3fe512b3496e4e26691b85e5bbcedb",
@@ -9,7 +9,7 @@
     "setup.command": "8fda15af04bca7b44dd0b2848d5c9b0add6298e7d0e8c668b4a1bfc5a5e95eb5",
     "setup.ps1": "68f30df91dfb60f26dab279ee7acf639c4d15c102a2900578ab5e76c986de8f7",
     "setup.cmd": "f3a2e3e6624e58703608b0c984390ab824d22cf33e3d81cd6dd55af70cdca95a",
-    "package.json": "89e0f9d8aa43d38a06f402d2521088a49de9732780480ddcd72e7fd3747708c7",
+    "package.json": "a49da3185fd9444b1927062c071df57319699aa61c2bd5b5ceb30a1ce30b6382",
     "icon.svg": "c31a63a7e2089286608c8943a30633f372d2e8987dc48c1a590316b59375982d",
     "icon.png": "f9e3b0a165f0b2eb626a307e3e515fa2087f7d4e8c3e7a43cf7523d2820949a3",
     "lib/config.js": "e26c8546da90f0b4472bccda79f13fc7a1336eefc1f786c16029182d0842b566",
@@ -27,7 +27,7 @@
     "lib/openai-stream.js": "eadb47f95011e2c643ea6ddc5df9e6a8122d7c00fadedaf373407c5aba3071eb",
     "lib/proto-wire.js": "4ced0ba3ffee117a3a930a7a84b85e0af13535a98623bddc9764faacbc82b48f",
     "lib/relay.js": "107ca9fe75e53ca57daa024f6cc847efabbe95473879b976b635fe53f9073259",
-    "lib/service.js": "96af3dee808a34c5431af036b6502ccb03d5e5103fbb6b8a2708e5f4bf1a0af1",
+    "lib/service.js": "24c9a3ae1809e39f76014aa5f9b5c7488c9c4507b8bcbb586ef5894d5051ab05",
     "lib/settings.js": "786cb4ab34da7dc24b7c7fe4050f2717a2f72adb5ad075f5f435b4bfce171957",
     "lib/watch.js": "6de33aea250bd40703fb255e4b7756f0eab6e14dbd3e3a0058952418bf379e03",
     "lib/x509.js": "e728d1d6361789e0033a0710b505a66c4a3e8138153f55449509e2ee6dbad256",
