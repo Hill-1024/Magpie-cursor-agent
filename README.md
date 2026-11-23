@@ -36,7 +36,7 @@ npm test
 
 支持按职责单独指定模型（可选附加 `[reasoning=low|medium|high|xhigh]`，留空则沿用主模型）：
 
-- `autoRouterModel`：Cursor 原生 `Auto` 模式的路由控制模型，负责从 Magpie 全量模型目录中选择最合适的执行模型；留空默认使用 `cursor/auto`（目录只有 `cursor/auto-smart` 时用它，两者都没有才回退主模型）。仅对原生 `Auto` 生效，不会劫持或干扰用户手动选择的 `cursor/auto`/`cursor/auto-smart`，且每次会话轮次严格单跳防回环。
+- `autoRouterModel`：Cursor 原生 `Auto` 模式的路由控制模型，负责从 Magpie 全量模型目录中选择最合适的执行模型；留空默认使用 `cursor/auto`，该控制请求失败时自动用目录里的 `cursor/auto-smart` 重试，没有 Cursor 供应商时才回退主模型。仅对原生 `Auto` 生效，不会劫持或干扰用户手动选择的 `cursor/auto`/`cursor/auto-smart`，且每次会话轮次严格单跳防回环。
 - `subagentModel` / `subagentTypeModels`：子代理默认模型及按类型（如 `explore`、`shell`、`generalPurpose`、`browser-use`）细分映射。
 - `bugbotModel`：Bugbot 自动审阅、`StreamBugBot`、`StreamBugBotLinter` 与 `StreamDiffReview`。
 - `securitybotModel`：SecurityBot 安全审查与漏洞扫描子代理。

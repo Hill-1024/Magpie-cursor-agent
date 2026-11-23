@@ -6,8 +6,8 @@
       aliases: ['autoRouter', 'autoRouterModel', 'auto', 'autoModel', 'router', 'routerModel'],
       zhLabel: 'Auto 路由控制模型 (Auto Router)',
       enLabel: 'Auto Mode Router',
-      zhDesc: '仅在 Cursor 中开启原生 Auto 时用于从 Magpie 目录择优（不影响手动选用的 cursor/auto）；留空默认使用 cursor/auto，目录只有 cursor/auto-smart 时用它。',
-      enDesc: 'Routes Cursor native Auto across all Magpie models (never affects manually selected cursor/auto); empty defaults to cursor/auto, else cursor/auto-smart.',
+      zhDesc: '仅在 Cursor 中开启原生 Auto 时用于从 Magpie 目录择优（不影响手动选用的 cursor/auto）；留空默认使用 cursor/auto，失败时用 cursor/auto-smart 重试。',
+      enDesc: 'Routes Cursor native Auto across all Magpie models (never affects manually selected cursor/auto); empty defaults to cursor/auto, retrying cursor/auto-smart on failure.',
       core: true,
     },
     {
@@ -246,13 +246,13 @@
       const isAutoRouter = def.key === 'autoRouter';
       const emptyOptionLabel = isAutoRouter
         ? zh
-          ? '默认 (优先 cursor/auto，无则 cursor/auto-smart，再回退主模型)'
-          : 'Default (cursor/auto, else cursor/auto-smart, else main model)'
+          ? '默认 (cursor/auto，失败时 cursor/auto-smart)'
+          : 'Default (cursor/auto, retry cursor/auto-smart)'
         : '';
       const inputPlaceholder = isAutoRouter
         ? zh
-          ? '留空默认用 cursor/auto（无则 cursor/auto-smart，再回退主模型）'
-          : 'Empty = cursor/auto, else cursor/auto-smart, else main model'
+          ? '留空默认用 cursor/auto，失败时用 cursor/auto-smart'
+          : 'Empty = cursor/auto, retry cursor/auto-smart'
         : zh
           ? '留空则沿用主模型（如 magpie/claude-haiku-5-5）'
           : 'Empty = inherit active model';

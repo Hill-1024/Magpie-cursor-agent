@@ -66,8 +66,8 @@
       ? '在主模型之外，为 Auto 路由控制、子代理、Bugbot、SecurityBot、标题、摘要、记忆与提交分别指定模型。'
       : 'Set dedicated models for Auto routing, subagents, Bugbot, SecurityBot, titles, summaries, memory, and commits.';
     routeNoteEl.innerHTML = zh
-      ? 'Auto 控制模型留空时默认走 <span class="cb-code">cursor/auto</span>（目录只有 <span class="cb-code">cursor/auto-smart</span> 时用它）。这条控制链路只用于 Cursor 原生 Auto，反代出来的 <span class="cb-code">cursor/*</span> 模型照常由 Cursor 自己路由，不会回到本插件。'
-      : 'An empty Auto router defaults to <span class="cb-code">cursor/auto</span> (or <span class="cb-code">cursor/auto-smart</span> when that is the catalogue entry). It applies only to Cursor native Auto; proxied <span class="cb-code">cursor/*</span> models keep Cursor’s own routing and never loop back here.';
+      ? 'Auto 控制模型留空时默认走 <span class="cb-code">cursor/auto</span>（失败时用 <span class="cb-code">cursor/auto-smart</span> 重试）。这条控制链路只用于 Cursor 原生 Auto，反代出来的 <span class="cb-code">cursor/*</span> 模型照常由 Cursor 自己路由，不会回到本插件。'
+      : 'An empty Auto router defaults to <span class="cb-code">cursor/auto</span> (retrying <span class="cb-code">cursor/auto-smart</span> on failure). It applies only to Cursor native Auto; proxied <span class="cb-code">cursor/*</span> models keep Cursor’s own routing and never loop back here.';
     subtypesSummaryEl.textContent = zh
       ? '子代理细分类型覆盖 (explore / shell / generalPurpose / browser-use)'
       : 'Subagent type overrides (explore / shell / generalPurpose / browser-use)';

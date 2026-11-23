@@ -31,8 +31,8 @@
       </div>
 
       <p class="cb-route-note" id="panel-route-note">
-        Auto 控制模型留空时默认走 <span class="cb-code">cursor/auto</span>（目录只有
-        <span class="cb-code">cursor/auto-smart</span> 时用它）。这条控制链路只用于 Cursor 原生
+        Auto 控制模型留空时默认走 <span class="cb-code">cursor/auto</span>（失败时用
+        <span class="cb-code">cursor/auto-smart</span> 重试）。这条控制链路只用于 Cursor 原生
         Auto，反代出来的 <span class="cb-code">cursor/*</span> 模型照常由 Cursor 自己路由，不会回到本插件。
       </p>
 

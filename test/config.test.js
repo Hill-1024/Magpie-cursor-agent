@@ -119,7 +119,7 @@ test('normalizeRoleConfig, parseModelRef, and resolveRoleModel handle aliases, s
   });
 });
 
-test('resolveAutoRouterConfig prefers explicit config, defaults to cursor/auto when present, and falls back cleanly', () => {
+test('resolveAutoRouterConfig honors explicit cursor/auto and defaults to it with a catalogue retry', () => {
   const modelsWithCursorAuto = [
     { id: 'anthropic/claude-sonnet', name: 'Sonnet', context: 200000 },
     { id: 'cursor/auto', name: 'Cursor Auto', context: 200000 },
@@ -149,7 +149,12 @@ test('resolveAutoRouterConfig prefers explicit config, defaults to cursor/auto w
       ],
       roles: { autoRouter: '' },
     }),
-    { modelId: 'cursor/auto-smart', effort: null, source: 'default-cursor-auto' }
+    {
+      modelId: 'cursor/auto',
+      effort: null,
+      source: 'default-cursor-auto',
+      fallbackModelId: 'cursor/auto-smart',
+    }
   );
   assert.deepEqual(
     resolveAutoRouterConfig({
@@ -157,7 +162,18 @@ test('resolveAutoRouterConfig prefers explicit config, defaults to cursor/auto w
       models: [{ id: 'cursor/auto-smart', name: 'Auto · Cursor', context: 200000 }],
       roles: { autoRouter: 'cursor/auto[reasoning=low]' },
     }),
-    { modelId: 'cursor/auto-smart', effort: 'low', source: 'configured' }
+    { modelId: 'cursor/auto', effort: 'low', source: 'configured' }
+  );
+  assert.deepEqual(
+    resolveAutoRouterConfig({
+      model: 'anthropic/claude-sonnet',
+      models: [
+        { id: 'anthropic/claude-sonnet', name: 'Sonnet', context: 200000 },
+        { id: 'cursor/grok-4.7', name: 'Grok 4.7 · Cursor', context: 200000 },
+      ],
+      roles: {},
+    }),
+    { modelId: 'cursor/auto', effort: null, source: 'default-cursor-auto' }
   );
   assert.deepEqual(
     resolveAutoRouterConfig({
