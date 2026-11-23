@@ -137,7 +137,10 @@
         script.remove();
         resolve();
       };
-      script.onload = finish;
+      script.onload = () => {
+        runtimeMissing = false;
+        finish();
+      };
       script.onerror = () => {
         runtimeMissing = true;
         finish();
