@@ -1018,24 +1018,28 @@ test('AvailableModels exposes only each model context and effort capabilities', 
         name: 'Grok 4.7 @ 500k',
         context: 500000,
         efforts: ['low', 'medium', 'high', 'xhigh'],
+        fast: true,
       },
       {
         id: 'auto/deepseek-v4.1-flash',
         name: 'DeepSeek V4.1 Flash',
         context: 1048000,
         efforts: ['low', 'high', 'max'],
+        fast: false,
       },
       {
         id: 'cursor/auto-smart',
         name: 'Auto',
         context: 200000,
         efforts: [],
+        fast: false,
       },
       {
         id: 'local/small',
         name: 'Small',
         context: 128000,
         efforts: [],
+        fast: false,
       },
     ],
     roles: {},
@@ -1043,27 +1047,35 @@ test('AvailableModels exposes only each model context and effort capabilities', 
 
   const decoded = decodeCursor('AvailableModelsAddition', engine.buildAvailableModelsResponse(false));
   const byName = new Map(decoded.models.map(model => [model.name, model]));
-  const values = (model, id) =>
-    model.parameterDefinitions
-      .find(parameter => parameter.id === id)
-      ?.parameterType.enumParameter.values.map(entry => entry.value);
+  const values = (model, id) => {
+    const parameter = model.parameterDefinitions.find(entry => entry.id === id);
+    const type = parameter?.parameterType;
+    return (type?.enumParameter?.values || type?.booleanParameter?.values)?.map(entry => entry.value);
+  };
 
   const grok = byName.get('cursor/grok-4.7@500k');
   assert.deepEqual(values(grok, 'context'), ['200k', '356k', '500k']);
   assert.deepEqual(values(grok, 'reasoning'), ['low', 'medium', 'high', 'xhigh']);
+  assert.deepEqual(values(grok, 'fast'), ['false', 'true']);
   assert.equal(grok.supportsThinking, true);
+  assert.equal(grok.supportsMaxMode, true);
 
   const deepseek = byName.get('auto/deepseek-v4.1-flash');
   assert.deepEqual(values(deepseek, 'context'), ['200k', '356k', '500k', '800k', '1m']);
   assert.deepEqual(values(deepseek, 'reasoning'), ['low', 'high', 'max']);
+  assert.equal(values(deepseek, 'fast'), undefined);
+  assert.equal(deepseek.supportsMaxMode, false);
 
   const auto = byName.get('cursor/auto-smart');
   assert.deepEqual(values(auto, 'context'), ['200k']);
   assert.deepEqual(values(auto, 'reasoning'), ['default']);
+  assert.equal(values(auto, 'fast'), undefined);
   assert.equal(auto.supportsThinking, false);
+  assert.equal(auto.supportsMaxMode, false);
 
   const small = byName.get('local/small');
   assert.deepEqual(values(small, 'context'), ['128000']);
   assert.deepEqual(values(small, 'reasoning'), ['default']);
+  assert.equal(values(small, 'fast'), undefined);
   assert.equal(small.supportsThinking, false);
 });

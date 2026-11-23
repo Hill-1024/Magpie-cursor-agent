@@ -57,12 +57,14 @@ test('fetchGatewayModels refreshes live catalogue from local gateway', async tes
             id: 'provider/model-a',
             context_window: 200000,
             reasoning_levels: ['low', 'high'],
+            service_tiers: [{ id: 'priority', name: 'Fast' }],
           },
           {
             id: 'group/auto',
             display_name: 'Auto Group',
             context_window: 256000,
             supported_reasoning_levels: [{ effort: 'medium' }, { effort: 'max' }],
+            service_tiers: [],
           },
         ],
       })
@@ -80,7 +82,9 @@ test('fetchGatewayModels refreshes live catalogue from local gateway', async tes
   assert.equal(refreshed.models[1].name, 'Auto Group');
   assert.equal(refreshed.models[0].context, 200000);
   assert.deepEqual(refreshed.models[0].efforts, ['low', 'high']);
+  assert.equal(refreshed.models[0].fast, true);
   assert.deepEqual(refreshed.models[1].efforts, ['medium', 'max']);
+  assert.equal(refreshed.models[1].fast, false);
 });
 
 test('normalizeRoleConfig, parseModelRef, and resolveRoleModel handle aliases, subtypes, and reasoning', () => {

@@ -1,6 +1,6 @@
 {
   "name": "magpie-cursor-agent",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "type": "module",
   "main": "./plugin.js",
   "description": "Clean-room zero-dependency Cursor protocol bridge backed by Magpie",
