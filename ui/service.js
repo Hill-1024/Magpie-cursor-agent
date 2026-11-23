@@ -14,7 +14,8 @@
   const subtypesSummaryEl = document.getElementById('svc-subtypes-summary');
   const subtypesListEl = document.getElementById('svc-subtypes-list');
 
-  const lang = navigator.language || 'zh-CN';
+  const queryLang = new URLSearchParams(window.location.search).get('lang');
+  const lang = queryLang || navigator.language || 'zh-CN';
   const zh = ui.isZh(lang);
   let catalogModels = [];
 
@@ -28,7 +29,7 @@
     subtitleEl.textContent = zh
       ? '从已同步的 Magpie 模型目录选取各角色专用模型；保存后写入 roles.json，桥接将在 1 秒内热生效。'
       : 'Select dedicated models from the active Magpie catalog; saves hot-reload into roles.json within ~1s.';
-    backBtn.textContent = zh ? '返回插件页' : 'Back';
+    backBtn.textContent = zh ? '返回' : 'Back';
     refreshBtn.textContent = zh ? '刷新状态' : 'Refresh';
     saveBtn.textContent = zh ? '保存热更新' : 'Save & Hot-Reload';
     subtypesSummaryEl.textContent = zh
@@ -45,7 +46,9 @@
     statePillEl.dataset.state = bridgeState;
     const portText = state?.status?.port ? ` :${state.status.port}` : '';
     statePillEl.textContent = `bridge: ${bridgeState}${portText}`;
-    authPillEl.textContent = `cursorAuth: ${state?.status?.cursorAuth || 'unknown'}`;
+    statePillEl.title = state?.status?.detail || '';
+    const count = state?.status?.modelsCount ?? catalogModels.length;
+    authPillEl.textContent = zh ? `目录模型: ${count}` : `models: ${count}`;
     const activeMain = state?.status?.model || state?.defaultModel || '-';
     modelPillEl.textContent = `main: ${activeMain}`;
   }
@@ -69,12 +72,14 @@
         models: catalogModels,
       });
       setToast(
-        catalogModels.length > 0
-          ? ''
-          : zh
-            ? '未发现 Magpie 同步模型，请先在 Agents 列表连接 Cursor · Magpie Bridge（也可直接手动填写模型 ID）'
-            : 'No synced models found yet; connect the agent first or type custom IDs.',
-        'info'
+        data?.status?.detail && (data?.status?.state === 'error' || data?.status?.state === 'paused')
+          ? data.status.detail
+          : catalogModels.length > 0
+            ? ''
+            : zh
+              ? '未发现 Magpie 同步模型，请先在 Agents 列表连接 Cursor · Magpie Bridge（也可直接手动填写模型 ID）'
+              : 'No synced models found yet; connect the agent first or type custom IDs.',
+        data?.status?.detail && (data?.status?.state === 'error' || data?.status?.state === 'paused') ? 'error' : 'info'
       );
     } catch (error) {
       setToast(`${zh ? '加载失败' : 'Load failed'}: ${error?.message || error}`, 'error');

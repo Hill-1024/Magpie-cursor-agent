@@ -84,6 +84,7 @@
 
   const EFFORT_OPTIONS = ['', 'none', 'low', 'medium', 'high', 'xhigh', 'max'];
   const SUBAGENT_PRESETS = ['explore', 'shell', 'generalPurpose', 'browser-use'];
+  const CUSTOM_MODEL = '__custom__';
 
   function isZh(lang) {
     return String(lang || '').toLowerCase().startsWith('zh');
@@ -192,7 +193,7 @@
     return opt;
   }
 
-  function populateModelSelect(selectEl, models, currentModelId, zh, emptyLabel = '') {
+  function populateModelSelect(selectEl, models, currentModelId, zh, emptyLabel = '', { allowCustom = false } = {}) {
     selectEl.replaceChildren();
     selectEl.appendChild(
       createOptionElement('', emptyLabel || (zh ? '继承当前主模型 (默认)' : 'Inherit active main model'))
@@ -204,10 +205,12 @@
       const label = entry.name && entry.name !== entry.id ? `${entry.name} (${entry.id})` : entry.id;
       selectEl.appendChild(createOptionElement(entry.id, label));
     }
-    if (currentModelId && !seenIds.has(currentModelId)) {
+    if (allowCustom) {
+      selectEl.appendChild(createOptionElement(CUSTOM_MODEL, zh ? '自定义模型 ID…' : 'Custom model ID…'));
+    } else if (currentModelId && !seenIds.has(currentModelId)) {
       selectEl.appendChild(createOptionElement(currentModelId, `${currentModelId} (${zh ? '自定义' : 'custom'})`));
     }
-    selectEl.value = currentModelId || '';
+    selectEl.value = currentModelId && (seenIds.has(currentModelId) || !allowCustom) ? currentModelId : currentModelId ? CUSTOM_MODEL : '';
   }
 
   function renderRoleGrid(containerEl, formState, { lang, models = null, includeAll = true } = {}) {
@@ -257,7 +260,7 @@
       if (Array.isArray(models) && models.length > 0) {
         const modelSelect = document.createElement('select');
         modelSelect.className = 'cb-model-select';
-        populateModelSelect(modelSelect, models, parsed.modelId, zh, emptyOptionLabel);
+        populateModelSelect(modelSelect, models, parsed.modelId, zh, emptyOptionLabel, { allowCustom: true });
         const customInput = document.createElement('input');
         customInput.type = 'text';
         customInput.className = 'cb-model-input';
@@ -269,14 +272,25 @@
             ? '或手动输入模型 ID'
             : 'Or custom model ID';
         customInput.value = parsed.modelId;
+        const knownIds = new Set(models.map(entry => entry?.id).filter(Boolean));
+        const showCustom = Boolean(parsed.modelId) && !knownIds.has(parsed.modelId);
+        customInput.hidden = !showCustom;
+        modelSelect.value = showCustom ? CUSTOM_MODEL : parsed.modelId || '';
 
         modelSelect.addEventListener('change', () => {
+          if (modelSelect.value === CUSTOM_MODEL) {
+            customInput.hidden = false;
+            customInput.focus();
+            return;
+          }
           customInput.value = modelSelect.value;
+          customInput.hidden = true;
         });
         customInput.addEventListener('input', () => {
           const trimmed = customInput.value.trim();
           const matchingOpt = Array.from(modelSelect.options).find(opt => opt.value === trimmed);
-          modelSelect.value = matchingOpt ? trimmed : '';
+          modelSelect.value = matchingOpt ? trimmed : trimmed ? CUSTOM_MODEL : '';
+          customInput.hidden = Boolean(matchingOpt) || !trimmed;
         });
         inputsRow.append(modelSelect, customInput);
       } else {
@@ -325,15 +339,26 @@
 
     if (Array.isArray(models) && models.length > 0) {
       const selectEl = document.createElement('select');
-      selectEl.className = 'cb-subtype-model';
-      populateModelSelect(selectEl, models, parsed.modelId, zh);
+      selectEl.className = 'cb-subtype-select';
+      populateModelSelect(selectEl, models, parsed.modelId, zh, '', { allowCustom: true });
+      const knownIds = new Set(models.map(entry => entry?.id).filter(Boolean));
+      const showCustom = Boolean(parsed.modelId) && !knownIds.has(parsed.modelId);
+      modelInput.hidden = !showCustom;
+      selectEl.value = showCustom ? CUSTOM_MODEL : parsed.modelId || '';
       selectEl.addEventListener('change', () => {
+        if (selectEl.value === CUSTOM_MODEL) {
+          modelInput.hidden = false;
+          modelInput.focus();
+          return;
+        }
         modelInput.value = selectEl.value;
+        modelInput.hidden = true;
       });
       modelInput.addEventListener('input', () => {
         const trimmed = modelInput.value.trim();
         const matchingOpt = Array.from(selectEl.options).find(opt => opt.value === trimmed);
-        selectEl.value = matchingOpt ? trimmed : '';
+        selectEl.value = matchingOpt ? trimmed : trimmed ? CUSTOM_MODEL : '';
+        modelInput.hidden = Boolean(matchingOpt) || !trimmed;
       });
       row.appendChild(selectEl);
     }
@@ -376,8 +401,7 @@
     if (subagentListEl) {
       for (const row of subagentListEl.querySelectorAll('.cb-subtype-row')) {
         const typeInput = row.querySelector('.cb-subtype-key');
-        const modelInputs = row.querySelectorAll('.cb-subtype-model');
-        const textInput = modelInputs[modelInputs.length - 1];
+        const textInput = row.querySelector('.cb-subtype-model');
         const effortEl = row.querySelector('.cb-effort-select');
         const cleanType = String(typeInput?.value || '').replace(/[\r\n\0]/g, '').trim();
         const formatted = formatModelRef(textInput?.value || '', effortEl?.value || '');

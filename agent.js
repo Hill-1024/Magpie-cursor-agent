@@ -10,7 +10,7 @@ export const agent = {
   effort: true,
   ua: ['cursor-magpie-bridge'],
   notice:
-    '打开开关即可接管 Cursor，无需重启。插件宿主会自动拉起或更新后台桥接（首次安装若弹出证书确认请选“是”）。已支持 Cursor 原生 Auto 模式智能路由（未配置控制模型时默认使用 cursor/auto），亦可在面板或插件页单独指定 Auto 控制模型及各子角色模型。',
+    '打开开关即可接管 Cursor，无需重启。插件宿主会自动拉起或更新后台桥接（首次安装若弹出证书确认请选“是”）。已支持 Cursor 原生 Auto 模式智能路由（未配置控制模型时默认使用 cursor/auto），并在本页下方直接配置 Auto 控制模型及各子角色模型。',
 };
 
 export function connect({ gateway, models }) {

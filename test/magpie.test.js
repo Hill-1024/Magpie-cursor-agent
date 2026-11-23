@@ -14,6 +14,9 @@ test('readWiredFromFile and nextMagpieGate track Magpie agent switch cleanly', t
   assert.equal(readWiredFromFile(file), true);
 
   fs.writeFileSync(file, JSON.stringify({ version: '1', state: { agents: [{ id: agentId }] } }));
+  assert.equal(readWiredFromFile(file), null);
+
+  fs.writeFileSync(file, JSON.stringify({ version: '1', state: { agents: [{ id: agentId, wired: false }] } }));
   assert.equal(readWiredFromFile(file), false);
 
   assert.deepEqual(nextMagpieGate(null, false), { hold: false, next: null });

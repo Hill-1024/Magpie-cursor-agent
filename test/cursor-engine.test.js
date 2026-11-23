@@ -955,3 +955,56 @@ test('Auto routing falls back on router errors and aborts cleanly on CancelActio
   assert.equal(cancelEnd.error?.code, 'canceled');
   assert.deepEqual(seenModels, ['cursor/auto', 'group/auto', 'cursor/auto']);
 });
+
+test('RequestContext timeout aborts pending exec cleanly and normal turn emits terminal checkpoint after turnEnded', async testCtx => {
+  const prevTimeout = process.env.CURSOR_BRIDGE_REQUEST_CONTEXT_TIMEOUT_MS;
+  process.env.CURSOR_BRIDGE_REQUEST_CONTEXT_TIMEOUT_MS = '80';
+  testCtx.after(() => {
+    if (prevTimeout === undefined) delete process.env.CURSOR_BRIDGE_REQUEST_CONTEXT_TIMEOUT_MS;
+    else process.env.CURSOR_BRIDGE_REQUEST_CONTEXT_TIMEOUT_MS = prevTimeout;
+  });
+
+  const { ca, mockGateway, proxy } = await startRunSseProxy({
+    onGatewayRequest: (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: {"choices":[{"delta":{"content":"TERMINAL_OK"}}]}\n\n');
+      res.write('data: {"choices":[{"finish_reason":"stop"}]}\n\n');
+      res.end('data: [DONE]\n\n');
+    },
+  });
+  testCtx.after(async () => {
+    await proxy.close();
+    mockGateway.close();
+  });
+
+  const seenFrames = [];
+  const done = streamRunSse({
+    proxyPort: proxy.port,
+    caCertPem: ca.certPem,
+    requestId: 'req-terminal-chk',
+    onFrame: async msg => {
+      seenFrames.push(msg);
+    },
+  });
+  await bidiAppend(proxy.port, ca.certPem, 'req-terminal-chk', 0, {
+    runRequest: {
+      conversationId: 'conv-term',
+      runId: 'req-terminal-chk',
+      requestedModel: { modelId: 'group/auto' },
+      action: {
+        userMessageAction: {
+          userMessage: { text: 'Say TERMINAL_OK', messageId: 'm-term', mode: 1 },
+        },
+      },
+    },
+  });
+
+  const endJson = await done;
+  assert.deepEqual(endJson, {});
+  const abortIdx = seenFrames.findIndex(msg => msg.execServerControlMessage?.abort?.id === 0);
+  const turnEndedIdx = seenFrames.findIndex(msg => Boolean(msg.interactionUpdate?.turnEnded));
+  const checkpointIdx = seenFrames.findIndex(msg => Boolean(msg.conversationCheckpointUpdate));
+  assert.ok(abortIdx >= 0, 'expected execServerControlMessage.abort for timed-out RequestContext');
+  assert.ok(turnEndedIdx > abortIdx, 'expected turnEnded after RequestContext abort');
+  assert.ok(checkpointIdx > turnEndedIdx, 'expected terminal conversationCheckpointUpdate after turnEnded');
+});

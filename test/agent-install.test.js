@@ -4,11 +4,18 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { agent, connect } from '../agent.js';
 import { activate, label, paths, plistText, stage, verifyPackage } from '../lib/install.js';
-import { createConfigService, readSafeState, writeRolesFile } from '../plugin.js';
+import {
+  createConfigService,
+  publishCatalogAsset,
+  readSafeState,
+  startManagedConfigService,
+  writeRolesFile,
+} from '../lib/service.js';
 
 const sourceDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const manifest = JSON.parse(fs.readFileSync(path.join(sourceDir, 'package.json'), 'utf8'));
@@ -63,7 +70,7 @@ test('stage creates isolated immutable releases without node_modules or opaque b
   assert.ok(fs.existsSync(path.join(releaseOne, 'engine.js')));
   assert.ok(fs.existsSync(path.join(releaseOne, 'plugin.js')));
   assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'panel.html')));
-  assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'page.html')));
+  assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'catalog.js')));
   assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'service.html')));
   assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'shared.js')));
   assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'style.css')));
@@ -201,7 +208,7 @@ test('bridge.js supervise starts engine, updates Cursor settings, and restores c
   assert.equal(stoppedStatus.state, 'stopped');
 });
 
-test('plugin.js config service hides gateway secrets, validates loopback headers, and persists roles.json', async testCtx => {
+test('service.js config service hides gateway secrets, validates loopback headers, and persists roles.json', async testCtx => {
   const rootDir = makeTemp(testCtx);
   fs.writeFileSync(
     path.join(rootDir, 'connection.json'),
@@ -216,10 +223,23 @@ test('plugin.js config service hides gateway secrets, validates loopback headers
       ],
     })
   );
+  fs.writeFileSync(
+    path.join(rootDir, 'status.json'),
+    JSON.stringify({
+      version: manifest.version,
+      state: 'connected',
+      reason: 'Bridge active',
+      proxy: 'http://127.0.0.1:52407',
+      models: 2,
+    })
+  );
 
   const safeBefore = readSafeState({ rootDir, includeMagpiePlugins: false });
   assert.equal(JSON.stringify(safeBefore).includes('top-secret-gateway-key'), false);
   assert.equal(safeBefore.models.length, 2);
+  assert.equal(safeBefore.status?.port, 52407);
+  assert.equal(safeBefore.status?.detail, 'Bridge active');
+  assert.equal(safeBefore.status?.modelsCount, 2);
 
   const service = await createConfigService({
     rootDir,
@@ -229,16 +249,42 @@ test('plugin.js config service hides gateway secrets, validates loopback headers
   });
   testCtx.after(() => service.close());
 
-  const htmlResp = await fetch(`http://127.0.0.1:${service.port}/`);
+  const htmlResp = await fetch(
+    `http://127.0.0.1:${service.port}/?uiOrigin=${encodeURIComponent(`http://127.0.0.1:${service.port}`)}`
+  );
   assert.equal(htmlResp.status, 200);
   assert.match(await htmlResp.text(), /Cursor Bridge/);
+  assert.match(
+    htmlResp.headers.get('content-security-policy') || '',
+    new RegExp(`script-src 'self' http://127\\.0\\.0\\.1:${service.port}`)
+  );
+
+  const directHtmlResp = await fetch(`http://127.0.0.1:${service.port}/`);
+  assert.equal(directHtmlResp.status, 200);
+  assert.match(
+    directHtmlResp.headers.get('content-security-policy') || '',
+    new RegExp(`connect-src 'self' http://127\\.0\\.0\\.1:${service.port}`)
+  );
 
   const stateResp = await fetch(`http://127.0.0.1:${service.port}/api/state`, {
     headers: { Origin: 'null' },
   });
   assert.equal(stateResp.status, 200);
+  assert.equal(stateResp.headers.get('access-control-allow-origin'), 'null');
   const stateText = await stateResp.text();
   assert.equal(stateText.includes('top-secret-gateway-key'), false);
+
+  const preflightResp = await fetch(`http://127.0.0.1:${service.port}/api/roles`, {
+    method: 'OPTIONS',
+    headers: {
+      Origin: 'null',
+      'Access-Control-Request-Method': 'POST',
+      'Access-Control-Request-Headers': 'content-type',
+    },
+  });
+  assert.equal(preflightResp.status, 204);
+  assert.equal(preflightResp.headers.get('access-control-allow-origin'), 'null');
+  assert.match(preflightResp.headers.get('access-control-allow-headers') || '', /Content-Type/i);
 
   const evilResp = await fetch(`http://127.0.0.1:${service.port}/api/state`, {
     headers: { Origin: 'https://evil.example' },
@@ -247,7 +293,7 @@ test('plugin.js config service hides gateway secrets, validates loopback headers
 
   const saveResp = await fetch(`http://127.0.0.1:${service.port}/api/roles`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', Origin: 'null' },
     body: JSON.stringify({
       autoRouterModel: 'cursor/auto',
       subagentModel: 'magpie/fast[reasoning=low]',
@@ -260,6 +306,7 @@ test('plugin.js config service hides gateway secrets, validates loopback headers
     }),
   });
   assert.equal(saveResp.status, 200);
+  assert.equal(saveResp.headers.get('access-control-allow-origin'), 'null');
   const savedJson = await saveResp.json();
   assert.equal(savedJson.roles.autoRouter, 'cursor/auto');
   assert.equal(savedJson.roles.subagent, 'magpie/fast[reasoning=low]');
@@ -272,4 +319,77 @@ test('plugin.js config service hides gateway secrets, validates loopback headers
 
   const directWrite = writeRolesFile(rootDir, { commitModel: 'magpie/fast' });
   assert.equal(directWrite.commit, 'magpie/fast');
+});
+
+test('publishCatalogAsset writes the Agents-page catalogue without gateway secrets', async testCtx => {
+  const rootDir = makeTemp(testCtx);
+  const uiDir = path.join(makeTemp(testCtx), 'ui');
+  fs.writeFileSync(
+    path.join(rootDir, 'connection.json'),
+    JSON.stringify({
+      enabled: true,
+      gateway: 'http://127.0.0.1:3425/v1',
+      key: 'catalog-secret-key',
+      model: 'cursor/auto-smart',
+      models: [
+        { id: 'cursor/auto-smart', name: 'Cursor Auto', context: 200000 },
+        { id: 'magpie/fast', name: 'Fast Model', context: 128000 },
+      ],
+    })
+  );
+  fs.writeFileSync(
+    path.join(rootDir, 'status.json'),
+    JSON.stringify({ state: 'connected', proxy: 'http://127.0.0.1:52407', models: 2 })
+  );
+  fs.writeFileSync(path.join(rootDir, 'roles.json'), JSON.stringify({ autoRouter: 'cursor/auto-smart' }));
+
+  const result = publishCatalogAsset({ uiDir, rootDir, includeMagpiePlugins: false });
+  assert.equal(result.ok, true);
+  const source = fs.readFileSync(result.file, 'utf8');
+  assert.equal(source.includes('catalog-secret-key'), false);
+  const sandbox = { globalThis: {} };
+  sandbox.globalThis = sandbox;
+  vm.runInNewContext(source, sandbox, { filename: 'catalog.runtime.js' });
+  assert.equal(sandbox.CursorBridgeCatalog.models.length, 2);
+  assert.equal(sandbox.CursorBridgeCatalog.defaultModel, 'cursor/auto-smart');
+  assert.equal(sandbox.CursorBridgeCatalog.roles.autoRouter, 'cursor/auto-smart');
+  assert.equal(sandbox.CursorBridgeCatalog.status.port, 52407);
+
+  const unchanged = publishCatalogAsset({ uiDir, rootDir, includeMagpiePlugins: false });
+  assert.equal(unchanged.changed, false);
+});
+
+test('plugin.js exports only default entry and startManagedConfigService reclaims port across host recycle', async testCtx => {
+  const pluginMod = await import('../plugin.js');
+  assert.deepEqual(Object.keys(pluginMod), ['default']);
+  assert.equal(typeof pluginMod.default, 'function');
+
+  const rootDir = makeTemp(testCtx);
+  const oldService = await createConfigService({
+    rootDir,
+    uiDir: path.join(sourceDir, 'ui'),
+    port: 0,
+    includeMagpiePlugins: false,
+  });
+  let oldClosed = false;
+  testCtx.after(async () => {
+    if (!oldClosed) await oldService.close();
+  });
+
+  const managed = await startManagedConfigService({
+    rootDir,
+    uiDir: path.join(sourceDir, 'ui'),
+    port: oldService.port,
+    reclaimIntervalMs: 50,
+  });
+  testCtx.after(() => managed.close());
+  assert.equal(managed.role, 'attached');
+  assert.equal(managed.port, oldService.port);
+
+  await oldService.close();
+  oldClosed = true;
+  for (let i = 0; i < 30 && managed.role !== 'owner'; i += 1) {
+    await new Promise(resolve => setTimeout(resolve, 40));
+  }
+  assert.equal(managed.role, 'owner');
 });

@@ -1,3 +1,4 @@
 .bridge-tmp-*
 *.log
 .DS_Store
+ui/catalog.runtime.js

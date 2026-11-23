@@ -79,7 +79,7 @@ test('ui/shared.js normalizes aliases, preserves unrelated plugin options, and c
 });
 
 test('all ui/*.js files parse cleanly without syntax errors', () => {
-  for (const fileName of ['shared.js', 'panel.js', 'page.js', 'service.js']) {
+  for (const fileName of ['shared.js', 'catalog.js', 'panel.js', 'service.js']) {
     const source = fs.readFileSync(path.join(rootDir, 'ui', fileName), 'utf8');
     assert.doesNotThrow(() => new vm.Script(source, { filename: `ui/${fileName}` }));
   }

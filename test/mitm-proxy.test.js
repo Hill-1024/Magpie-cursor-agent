@@ -275,6 +275,8 @@ test('MITM proxy blocks analytics, telemetry, Statsig, and local-token auth loca
     '/aiserver.v1.TelemetryService/RecordEvent',
     '/aiserver.v1.DashboardService/GetEffectiveUserPlugins',
     '/aiserver.v1.DashboardService/GetUserPrivacyMode',
+    '/aiserver.v1.DashboardService/GetTeamReposOrEmptyIfNotInTeam',
+    '/aiserver.v1.DashboardService/GetTeamAdminSettingsOrEmptyIfNotInTeam',
     '/aiserver.v1.NetworkService/IsConnected',
   ]) {
     const resp = await h1PostOverProxy(proxy.port, ca.certPem, blockedPath, Buffer.from([1, 2, 3]));
