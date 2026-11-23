@@ -10,7 +10,7 @@ export const agent = {
   effort: true,
   ua: ['cursor-magpie-bridge'],
   notice:
-    '打开开关即可接管 Cursor，无需重启。插件宿主会自动拉起或更新后台桥接（首次安装若弹出证书确认请选“是”）。本行只负责把 Magpie 的模型列表与主模型选择暴露给 Cursor。',
+    '打开开关即可接管 Cursor，无需重启。插件宿主会自动拉起或更新后台桥接（首次安装若弹出证书确认请选“是”）。本行负责把 Magpie 的模型列表与主模型选择暴露给 Cursor；分角色模型在插件侧栏的“Cursor 角色模型”页配置。',
 };
 
 export function connect({ gateway, models }) {

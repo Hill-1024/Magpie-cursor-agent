@@ -26,15 +26,25 @@ bash setup.command uninstall
 npm test
 ```
 
-## Magpie 插件集成（当前范围）
+## Magpie 插件集成与分角色模型配置
 
 本仓库遵循 `yetone/magpie` 的双模块插件规范：
 
 - `agent.js` 仅包含纯 `moejs` 沙箱元数据（`id: "cursor-bridge"`、`effort: true`、`connect()`），使插件直接出现在 Magpie **Agents** 列表中并支持一键开关、主模型与推理强度选择。
 - `plugin.js`（`package.json` `main`）由 Magpie Bun Plugin Host 自动加载，负责拉起/升级后台桥接，并在回环地址（默认 `http://127.0.0.1:19381`）提供诊断服务；该服务不再出现在 Magpie 侧栏。
+- Magpie 插件页（`ui/page.html`）：在侧栏的插件分组中提供“Cursor 角色模型”配置页，可单独指定 Auto 路由控制、子代理、Bugbot、SecurityBot、标题、摘要、记忆整理与提交信息使用的模型。
 
-当前只做一件事：**把 Magpie 的模型目录与主模型选择暴露给 Cursor**。Agents 行保留主模型和 effort，不显示任何自定义角色面板或插件选项。
+Agents 行只保留主模型与 effort；角色配置集中在插件侧栏页，不在 Agents 列表下方塞自定义面板。
 
-分角色模型路由（`autoRouterModel`、`subagentModel`、`bugbotModel`、`securitybotModel`、`titleModel`、`summarizeModel`、`memoryModel`、`commitModel`、`subagentTypeModels`）的配置 UI 已从 Magpie 隐藏并暂停；后台代码保留，等待 Magpie 提供原生 agent 字段契约后再接入。
+支持按职责单独指定模型（可选附加 `[reasoning=low|medium|high|xhigh]`，留空则沿用主模型）：
 
-如果你之前保存过角色配置，它们仍在 `~/.config/magpie-cursor-bridge/roles.json` 或 `plugins.json` 中；当前 UI 不再展示或修改它们。
+- `autoRouterModel`：Cursor 原生 `Auto` 模式的路由控制模型；留空默认使用 `cursor/auto`，失败时用 `cursor/auto-smart` 重试，没有 Cursor 供应商时才回退主模型。
+- `subagentModel` / `subagentTypeModels`：子代理默认模型及按类型（`explore`、`shell`、`generalPurpose`、`browser-use`）细分映射。
+- `bugbotModel`：Bugbot 自动审阅、`StreamBugBot`、`StreamBugBotLinter` 与 `StreamDiffReview`。
+- `securitybotModel`：SecurityBot 安全审查与漏洞扫描子代理。
+- `titleModel`：会话与分支标题命名（`NameAgent`、`GetChatTitle`、`WriteGitBranchName`）。
+- `summarizeModel`：长对话摘要与压缩（`SummarizeAction`、`CreateTranscriptOverview`、`GetConversationSummary`）。
+- `memoryModel`：记忆提取与整理（`PotentiallyGenerateMemory` 及记忆子代理）。
+- `commitModel`：Git 提交信息生成（`WriteGitCommitMessage`）。
+
+在插件页保存会写入 `~/.config/magpie/plugins.json` 的插件选项；本地服务页也可以写入 `~/.config/magpie-cursor-bridge/roles.json`。后台每 1 秒对比两者修改时间并取最新一份热生效，无需重启 Cursor。

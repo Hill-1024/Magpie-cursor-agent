@@ -71,6 +71,7 @@ test('stage creates isolated immutable releases without node_modules or opaque b
   assert.ok(fs.existsSync(path.join(releaseOne, 'plugin.js')));
   assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'panel.html')));
   assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'catalog.js')));
+  assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'page.html')));
   assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'service.html')));
   assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'shared.js')));
   assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'style.css')));
