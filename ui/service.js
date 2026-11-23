@@ -2,7 +2,6 @@
   const ui = globalThis.CursorBridgeUI;
   const titleEl = document.getElementById('svc-title');
   const subtitleEl = document.getElementById('svc-subtitle');
-  const backBtn = document.getElementById('svc-back-btn');
   const refreshBtn = document.getElementById('svc-refresh-btn');
   const saveBtn = document.getElementById('svc-save-btn');
   const addSubtypeBtn = document.getElementById('svc-add-subtype-btn');
@@ -25,20 +24,16 @@
   }
 
   function applyCopy() {
-    titleEl.textContent = zh ? 'Cursor Bridge 实时模型选择器' : 'Cursor Bridge Live Model Picker';
+    titleEl.textContent = zh ? 'Cursor 角色模型' : 'Cursor Role Models';
     subtitleEl.textContent = zh
-      ? '从已同步的 Magpie 模型目录选取各角色专用模型；保存后写入 roles.json，桥接将在 1 秒内热生效。'
-      : 'Select dedicated models from the active Magpie catalog; saves hot-reload into roles.json within ~1s.';
-    backBtn.textContent = zh ? '返回' : 'Back';
+      ? '从 Magpie 模型目录选取各角色专用模型；保存后写入 roles.json，桥接将在 1 秒内热生效。'
+      : 'Select dedicated models from the Magpie catalog; saves hot-reload into roles.json within ~1s.';
     refreshBtn.textContent = zh ? '刷新状态' : 'Refresh';
     saveBtn.textContent = zh ? '保存热更新' : 'Save & Hot-Reload';
     subtypesSummaryEl.textContent = zh
       ? '子代理细分类型映射 (explore / shell / generalPurpose / browser-use)'
       : 'Subagent type overrides (explore / shell / generalPurpose / browser-use)';
     addSubtypeBtn.textContent = zh ? '+ 添加子代理类型' : '+ Add Subagent Type';
-    if (window.history.length > 1) {
-      backBtn.hidden = false;
-    }
   }
 
   function renderStatusStrip(state) {
@@ -109,9 +104,6 @@
     }
   }
 
-  backBtn.addEventListener('click', () => {
-    window.history.back();
-  });
   refreshBtn.addEventListener('click', () => {
     loadState();
   });

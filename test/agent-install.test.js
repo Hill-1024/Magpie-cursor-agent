@@ -254,7 +254,7 @@ test('service.js config service hides gateway secrets, validates loopback header
     `http://127.0.0.1:${service.port}/?uiOrigin=${encodeURIComponent(`http://127.0.0.1:${service.port}`)}`
   );
   assert.equal(htmlResp.status, 200);
-  assert.match(await htmlResp.text(), /Cursor Bridge/);
+  assert.match(await htmlResp.text(), /Cursor (角色模型|Bridge)/);
   assert.match(
     htmlResp.headers.get('content-security-policy') || '',
     new RegExp(`script-src 'self' http://127\\.0\\.0\\.1:${service.port}`)

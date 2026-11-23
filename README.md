@@ -32,7 +32,7 @@ npm test
 
 - `agent.js` 仅包含纯 `moejs` 沙箱元数据（`id: "cursor-bridge"`、`effort: true`、`connect()`），使插件直接出现在 Magpie **Agents** 列表中并支持一键开关、主模型与推理强度选择。
 - `plugin.js`（`package.json` `main`）由 Magpie Bun Plugin Host 自动加载，负责拉起/升级后台桥接，并在回环地址（默认 `http://127.0.0.1:19381`）提供诊断服务；该服务不再出现在 Magpie 侧栏。
-- Magpie 插件页（`ui/page.html`）：在侧栏的插件分组中提供“Cursor 角色模型”配置页，可单独指定 Auto 路由控制、子代理、Bugbot、SecurityBot、标题、摘要、记忆整理与提交信息使用的模型。
+- Magpie 插件页（`ui/page.html`）：侧栏插件分组中的“Cursor 角色模型”会直接进入实时模型选择器，从 Magpie 模型目录下拉配置 Auto 路由控制、子代理、Bugbot、SecurityBot、标题、摘要、记忆整理与提交信息使用的模型。
 
 Agents 行只保留主模型与 effort；角色配置集中在插件侧栏页，不在 Agents 列表下方塞自定义面板。
 
@@ -47,4 +47,4 @@ Agents 行只保留主模型与 effort；角色配置集中在插件侧栏页，
 - `memoryModel`：记忆提取与整理（`PotentiallyGenerateMemory` 及记忆子代理）。
 - `commitModel`：Git 提交信息生成（`WriteGitCommitMessage`）。
 
-在插件页保存会写入 `~/.config/magpie/plugins.json` 的插件选项；本地服务页也可以写入 `~/.config/magpie-cursor-bridge/roles.json`。后台每 1 秒对比两者修改时间并取最新一份热生效，无需重启 Cursor。
+在插件页保存会写入 `~/.config/magpie-cursor-bridge/roles.json`，后台约 1 秒内热生效，无需重启 Cursor 或插件宿主。

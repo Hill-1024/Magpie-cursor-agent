@@ -1,5 +1,5 @@
 {
-  "version": "0.4.5",
+  "version": "0.4.6",
   "files": {
     "agent.js": "5d7898517f16313c80677ea49c2f4e122db4b61a239982570512beca6d1466c5",
     "plugin.js": "bf8c8933ee4a5cbe3ceaf19d4965725b70dbfb5c97d12fe1ac74c25943ecd2e1",
@@ -9,7 +9,7 @@
     "setup.command": "8fda15af04bca7b44dd0b2848d5c9b0add6298e7d0e8c668b4a1bfc5a5e95eb5",
     "setup.ps1": "68f30df91dfb60f26dab279ee7acf639c4d15c102a2900578ab5e76c986de8f7",
     "setup.cmd": "f3a2e3e6624e58703608b0c984390ab824d22cf33e3d81cd6dd55af70cdca95a",
-    "package.json": "979e58160d4a6fe8a51e11698615f8cbae89bdf8f75ff5123118dfba88909782",
+    "package.json": "227bf4a380d55397908a1ca7c8ec432396ab95753abd8e17d858625b1ac514db",
     "icon.svg": "c31a63a7e2089286608c8943a30633f372d2e8987dc48c1a590316b59375982d",
     "icon.png": "f9e3b0a165f0b2eb626a307e3e515fa2087f7d4e8c3e7a43cf7523d2820949a3",
     "lib/config.js": "b7996551ba9b78ef874b8afc3fd3ff49ba687dc4008dd22d144f28df1f77ade4",
@@ -34,12 +34,12 @@
     "ui/catalog.js": "67d5e2f01399ab3569f1e0a62c2ba93aa972bd6763e6dce812286a50d1818147",
     "ui/catalog.runtime.js": "6f54681fa9d9ec2cf11ad2a98b95596f00b05a2345de01b159caf135ff27c22c",
     "ui/icon.svg": "c31a63a7e2089286608c8943a30633f372d2e8987dc48c1a590316b59375982d",
-    "ui/page.html": "94922e2524fa88d9670214585f74b7cb902b9b3eb27cc010325adc0ad8069be3",
-    "ui/page.js": "ee91fd57a0a080b624afbf1fa0d28dd36b148a711f39784a9816f7900fb8f15b",
+    "ui/page.html": "ace881cfc0e4c85e4aeb34cdbe21f7fbbb67f7df7ecb5f3e218b97a2b47c5623",
+    "ui/page.js": "7eb426449ae670ceb92bb521a976cd4c594d806b60359998ad77075e29a8c56a",
     "ui/panel.html": "c0c26025d3138e4af2e0b1a8501757d0087f606d6b9eaa3111db92cf30f34448",
     "ui/panel.js": "1f28803457000d69799701b361d5faddddb1657673974a9d4d56b87100330cf0",
-    "ui/service.html": "2848c833ec6301bd9249f0fd868f5ec186aabd6d8908a838b676c0114ffcef34",
-    "ui/service.js": "b0974548f349c6d10299092eec4f7ec780ff7fc582eee470b2e3056ef5e05992",
+    "ui/service.html": "83ae3c378b9bdefc3712ca15198007b8ab5d5731f81192c4a30c9465c5a5ada9",
+    "ui/service.js": "594eee879e99ab7f67e8151e13f3b53b9af1e99e372e0c4527c6fade4d65128c",
     "ui/shared.js": "6aff0b3e31efccce6e9ce5a647aba7832d4485bf9d68e10db6f072ccbaf3dcbf",
     "ui/style.css": "cd90071b00213a4f0e885eaa18160af2c5927a9c600f6267450df4e270c57efc"
   }
