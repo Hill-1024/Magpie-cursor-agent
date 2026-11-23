@@ -53,8 +53,17 @@ test('fetchGatewayModels refreshes live catalogue from local gateway', async tes
     res.end(
       JSON.stringify({
         data: [
-          { id: 'provider/model-a', context_window: 200000 },
-          { id: 'group/auto', name: 'Auto Group', context_window: 256000 },
+          {
+            id: 'provider/model-a',
+            context_window: 200000,
+            reasoning_levels: ['low', 'high'],
+          },
+          {
+            id: 'group/auto',
+            display_name: 'Auto Group',
+            context_window: 256000,
+            supported_reasoning_levels: [{ effort: 'medium' }, { effort: 'max' }],
+          },
         ],
       })
     );
@@ -69,6 +78,9 @@ test('fetchGatewayModels refreshes live catalogue from local gateway', async tes
   assert.equal(refreshed.models.length, 2);
   assert.equal(refreshed.models[0].name, 'Model A');
   assert.equal(refreshed.models[1].name, 'Auto Group');
+  assert.equal(refreshed.models[0].context, 200000);
+  assert.deepEqual(refreshed.models[0].efforts, ['low', 'high']);
+  assert.deepEqual(refreshed.models[1].efforts, ['medium', 'max']);
 });
 
 test('normalizeRoleConfig, parseModelRef, and resolveRoleModel handle aliases, subtypes, and reasoning', () => {

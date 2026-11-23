@@ -23,6 +23,7 @@ export function connect({ gateway, models }) {
           id: entry.id,
           name: entry.name || entry.id,
           context: entry.context || null,
+          efforts: Array.isArray(entry.efforts) ? entry.efforts : [],
         }))
       : [],
   };
