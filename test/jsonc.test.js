@@ -45,3 +45,13 @@ test('setJsoncProperty handles empty object insertion and removal', () => {
   const back = setJsoncProperty(withKey, 'http.proxy', undefined, false);
   assert.deepEqual(parseJsonc(back), {});
 });
+
+test('setJsoncProperty updates effective last key and deletes all duplicates', () => {
+  const dup = '{\n  "http.proxy": "http://corp:8080",\n  "http.proxy": "http://corp:9090"\n}\n';
+  const updated = setJsoncProperty(dup, 'http.proxy', 'http://127.0.0.1:52407', true);
+  assert.equal(parseJsonc(updated)['http.proxy'], 'http://127.0.0.1:52407');
+  assert.ok(updated.includes('"http://corp:8080"'));
+
+  const deleted = setJsoncProperty(updated, 'http.proxy', undefined, false);
+  assert.deepEqual(parseJsonc(deleted), {});
+});

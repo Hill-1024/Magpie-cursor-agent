@@ -250,3 +250,49 @@ test('loadMergedRoles picks the newer source between plugins.json and roles.json
   assert.equal(cleared.bugbot, '');
   assert.equal(cleared.securitybot, '');
 });
+
+test('loadMergedRoles resolves equal mtimeMs deterministically and fetchGatewayModels deduplicates ids', async testCtx => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'magpie-cursor-tie-'));
+  testCtx.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  const rootDir = path.join(tempDir, 'bridge-root');
+  fs.mkdirSync(rootDir, { recursive: true });
+  const pluginsFile = path.join(tempDir, 'plugins.json');
+  const rolesFile = path.join(rootDir, 'roles.json');
+
+  fs.writeFileSync(
+    pluginsFile,
+    JSON.stringify({ plugins: [{ spec: 'cursor-bridge', options: { bugbotModel: 'from-plugins' } }] })
+  );
+  fs.writeFileSync(
+    rolesFile,
+    JSON.stringify({ bugbot: 'from-roles', updatedAt: new Date(Date.now() + 1000).toISOString() })
+  );
+  const sameTime = new Date(Date.now());
+  fs.utimesSync(pluginsFile, sameTime, sameTime);
+  fs.utimesSync(rolesFile, sameTime, sameTime);
+
+  const merged = loadMergedRoles({ rootDir, pluginsJsonPath: pluginsFile });
+  assert.equal(merged.bugbot, 'from-roles');
+
+  const dupServer = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        data: [
+          { id: 'provider/model-a', context_window: 200000 },
+          { id: 'provider/model-a', context_window: 128000 },
+        ],
+      })
+    );
+  });
+  await new Promise(resolve => dupServer.listen(0, '127.0.0.1', resolve));
+  testCtx.after(() => dupServer.close());
+
+  const refreshed = await fetchGatewayModels({
+    ...baseConfig,
+    gateway: `http://127.0.0.1:${dupServer.address().port}/v1`,
+  });
+  assert.equal(refreshed.models.length, 1);
+  assert.equal(refreshed.models[0].context, 200000);
+});

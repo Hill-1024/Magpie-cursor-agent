@@ -1136,3 +1136,128 @@ test('fast is forwarded as priority only for models that support it', async test
   assert.equal(requests[1].model, 'auto/deepseek-v4.1-flash');
   assert.equal('service_tier' in requests[1], false);
 });
+
+test('hydrateMessages strips skill bodies, filters rule types, deduplicates MCP tools, and hydrates prependUserMessages', async testCtx => {
+  const capturedPayloads = [];
+  const { ca, mockGateway, proxy } = await startRunSseProxy({
+    onGatewayRequest: (req, res) => {
+      const chunks = [];
+      req.on('data', chunk => chunks.push(chunk));
+      req.on('end', () => {
+        const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        capturedPayloads.push(payload);
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('data: {"choices":[{"delta":{"content":"TRIMMED_OK"}}]}\n\n');
+        res.write(
+          `data: ${JSON.stringify({
+            choices: [{ finish_reason: 'stop' }],
+            usage: { prompt_tokens: 420, completion_tokens: 12 },
+          })}\n\n`
+        );
+        res.end('data: [DONE]\n\n');
+      });
+    },
+  });
+  testCtx.after(() => proxy.close());
+  testCtx.after(() => mockGateway.close());
+
+  const hugeSkillBody = 'SECRET_SKILL_BODY_SHOULD_NOT_BE_INJECTED '.repeat(4000);
+  const hugeAgentRuleBody = 'AGENT_FETCHED_RULE_BODY_SHOULD_NOT_BE_INJECTED '.repeat(2000);
+  const hugeGlobRuleBody = 'GLOB_RULE_BODY_SHOULD_NOT_BE_INJECTED '.repeat(2000);
+  const manualRuleBody = 'MANUAL_RULE_BODY_SHOULD_NOT_BE_INJECTED '.repeat(500);
+
+  const agentSkills = Array.from({ length: 12 }, (_, idx) => ({
+    fullPath: `/Users/demo/.agents/skills/skill-${idx}/SKILL.md`,
+    description: `Skill ${idx} concise summary`,
+    content: hugeSkillBody,
+    disableModelInvocation: idx === 11,
+  }));
+
+  const requestId = 'req-trimmed-context';
+  const runDone = streamRunSse({
+    proxyPort: proxy.port,
+    caCertPem: ca.certPem,
+    requestId,
+    onFrame: async () => {},
+  });
+
+  const dupTool = {
+    name: 'mcp_demo_lookup',
+    description: 'Lookup item',
+    inputSchemaJson: JSON.stringify({ type: 'object', properties: { q: { type: 'string' } } }),
+    providerIdentifier: 'demo',
+    toolName: 'lookup',
+  };
+
+  await bidiAppend(proxy.port, ca.certPem, requestId, 0, {
+    runRequest: {
+      conversationId: 'conv-trimmed',
+      runId: requestId,
+      mcpTools: { mcpTools: [dupTool] },
+      action: {
+        userMessageAction: {
+          prependUserMessages: [{ text: 'Prepended context note', messageId: 'p-1', mode: 1 }],
+          userMessage: { text: 'Fix bug', messageId: 'u-1', mode: 1 },
+          requestContext: {
+            env: { workspacePaths: ['/tmp/ws'] },
+            tools: [dupTool],
+            agentSkills,
+            rules: [
+              {
+                fullPath: '/tmp/ws/.cursor/rules/global.mdc',
+                content: 'ALWAYS_RULE_BODY',
+                type: { global: {} },
+              },
+              {
+                fullPath: '/tmp/ws/.cursor/rules/agent-req.mdc',
+                content: hugeAgentRuleBody,
+                type: { agentFetched: { description: 'Use when editing auth' } },
+              },
+              {
+                fullPath: '/tmp/ws/.cursor/rules/glob.mdc',
+                content: hugeGlobRuleBody,
+                type: { fileGlobbed: { globs: ['**/*.ts'] } },
+              },
+              {
+                fullPath: '/tmp/ws/.cursor/rules/manual.mdc',
+                content: manualRuleBody,
+                type: { manuallyAttached: {} },
+              },
+              {
+                fullPath: '/Users/demo/.agents/skills/skill-0/SKILL.md',
+                content: hugeSkillBody,
+              },
+              {
+                fullPath: '/tmp/ws/.cursor/rules/plain.mdc',
+                content: 'PLAIN_UNTYPED_RULE',
+              },
+            ],
+          },
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(await runDone, {});
+  assert.equal(capturedPayloads.length, 1);
+  const systemContent = capturedPayloads[0].messages[0].content;
+  assert.equal(systemContent.includes('SECRET_SKILL_BODY_SHOULD_NOT_BE_INJECTED'), false);
+  assert.equal(systemContent.includes('AGENT_FETCHED_RULE_BODY_SHOULD_NOT_BE_INJECTED'), false);
+  assert.equal(systemContent.includes('GLOB_RULE_BODY_SHOULD_NOT_BE_INJECTED'), false);
+  assert.equal(systemContent.includes('MANUAL_RULE_BODY_SHOULD_NOT_BE_INJECTED'), false);
+  assert.equal(systemContent.includes('skill-11'), false);
+  assert.ok(systemContent.includes('/Users/demo/.agents/skills/skill-0/SKILL.md: Skill 0 concise summary'));
+  assert.ok(systemContent.includes('ALWAYS_RULE_BODY'));
+  assert.ok(systemContent.includes('PLAIN_UNTYPED_RULE'));
+  assert.ok(systemContent.includes('/tmp/ws/.cursor/rules/agent-req.mdc: Use when editing auth'));
+  assert.ok(systemContent.includes('/tmp/ws/.cursor/rules/glob.mdc: globs: **/*.ts'));
+  assert.ok(systemContent.length < 10_000, `expected compact system prompt, got ${systemContent.length} chars`);
+
+  assert.deepEqual(capturedPayloads[0].messages.slice(1), [
+    { role: 'user', content: 'Prepended context note' },
+    { role: 'user', content: 'Fix bug' },
+  ]);
+
+  const toolNames = capturedPayloads[0].tools.map(item => item.function.name);
+  assert.equal(toolNames.filter(name => name === 'mcp_demo_lookup').length, 1);
+});

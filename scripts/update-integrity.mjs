@@ -35,7 +35,7 @@ if (fs.existsSync(uiDir)) {
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         collectUiFiles(path.join(dirPath, entry.name), rel);
-      } else if (entry.isFile() && rel !== 'catalog.runtime.js') {
+      } else if (entry.isFile() && entry.name !== 'catalog.runtime.js') {
         tracked.push(rel);
       }
     }

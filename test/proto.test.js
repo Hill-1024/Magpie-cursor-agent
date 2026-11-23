@@ -149,3 +149,16 @@ test('AvailableModelsAddition subagentModelConfigs map and role auxiliary messag
   assert.equal(decodedMem.knowledgeId, 'kid-1');
   assert.equal(decodedMem.title, 'Prefers TypeScript');
 });
+
+test('decodeMessage rejects oversized or truncated length-delimited varints', () => {
+  // Field 1 (wireType 2 -> tag 0x0a), length = 2^64 - 1 (10 bytes varint)
+  const hugeLen = Buffer.from([
+    0x0a,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
+  ]);
+  assert.throws(() => decodeCursor('BidiRequestId', hugeLen), /exceeds safe bounds|Truncated/);
+
+  // Field 1 (wireType 2 -> tag 0x0a), length = 2^32 (exceeds buffer length)
+  const overflowLen = Buffer.from([0x0a, 0x80, 0x80, 0x80, 0x80, 0x10]);
+  assert.throws(() => decodeCursor('BidiRequestId', overflowLen), /Truncated length-delimited/);
+});

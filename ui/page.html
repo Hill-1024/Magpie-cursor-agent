@@ -7,13 +7,21 @@
   <script src="_magpie/bridge.js"></script>
   <link rel="stylesheet" href="style.css">
 </head>
-<body>
-  <div class="cb-shell">
-    <section class="cb-card">
-      <h1 class="cb-title">Cursor 角色模型</h1>
-      <p class="cb-subtitle">正在打开实时模型选择器…</p>
-    </section>
-  </div>
+<body class="cb-boot-body">
+  <main class="cb-boot">
+    <div class="cb-boot-head">
+      <span class="cb-dot is-connecting" aria-hidden="true"></span>
+      <h1 class="cb-boot-title" id="boot-title">Cursor 角色模型</h1>
+    </div>
+    <p class="cb-boot-status" id="boot-status">正在连接本地配置服务…</p>
+    <div class="cb-boot-fallback" id="boot-fallback" hidden>
+      <p class="cb-boot-hint" id="boot-hint"></p>
+      <div class="cb-boot-url-row">
+        <input class="cb-boot-url" id="boot-url" type="text" readonly>
+        <button class="cb-btn-sm" id="boot-retry" type="button">重试</button>
+      </div>
+    </div>
+  </main>
   <script src="page.js"></script>
 </body>
 </html>

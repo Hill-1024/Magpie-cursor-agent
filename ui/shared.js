@@ -2,26 +2,29 @@
   const ROLE_DEFS = [
     {
       key: 'autoRouter',
+      group: 'routing',
       optionKey: 'autoRouterModel',
       aliases: ['autoRouter', 'autoRouterModel', 'auto', 'autoModel', 'router', 'routerModel'],
       zhLabel: 'Auto 路由控制模型 (Auto Router)',
       enLabel: 'Auto Mode Router',
-      zhDesc: '仅在 Cursor 中开启原生 Auto 时用于从 Magpie 目录择优（不影响手动选用的 cursor/auto）；留空默认使用 cursor/auto，失败时用 cursor/auto-smart 重试。',
-      enDesc: 'Routes Cursor native Auto across all Magpie models (never affects manually selected cursor/auto); empty defaults to cursor/auto, retrying cursor/auto-smart on failure.',
+      zhDesc: '仅作用于 Cursor 原生 Auto 模式择优；留空默认用 cursor/auto（失败时用 cursor/auto-smart 重试）。',
+      enDesc: 'Applies only to Cursor native Auto; empty defaults to cursor/auto with cursor/auto-smart fallback.',
       core: true,
     },
     {
       key: 'subagent',
+      group: 'routing',
       optionKey: 'subagentModel',
       aliases: ['subagent', 'subagentModel', 'subagents'],
       zhLabel: '子代理默认模型 (Subagent)',
       enLabel: 'Subagent Default',
-      zhDesc: '处理 Cursor 派生的子代理任务（如 Explore / Shell / Task 工具）。',
-      enDesc: 'Handles spawned subagent runs (Explore, Shell, Task tool calls).',
+      zhDesc: '处理 Explore / Shell / Task 等默认派生子代理任务；留空则沿用主模型。',
+      enDesc: 'Handles spawned subagent runs (Explore, Shell, Task); empty inherits the active model.',
       core: true,
     },
     {
       key: 'bugbot',
+      group: 'specialized',
       optionKey: 'bugbotModel',
       aliases: ['bugbot', 'bugbotModel'],
       zhLabel: 'Bugbot 代码审查',
@@ -32,6 +35,7 @@
     },
     {
       key: 'securitybot',
+      group: 'specialized',
       optionKey: 'securitybotModel',
       aliases: ['securitybot', 'securitybotModel', 'security'],
       zhLabel: 'SecurityBot 安全审计',
@@ -42,6 +46,7 @@
     },
     {
       key: 'title',
+      group: 'specialized',
       optionKey: 'titleModel',
       aliases: ['title', 'titleModel', 'naming', 'namingModel'],
       zhLabel: '对话/分支标题命名',
@@ -52,6 +57,7 @@
     },
     {
       key: 'summarize',
+      group: 'specialized',
       optionKey: 'summarizeModel',
       aliases: ['summarize', 'summarizeModel', 'summary', 'summaryModel', 'compaction', 'compactionModel'],
       zhLabel: '对话摘要与压缩',
@@ -62,6 +68,7 @@
     },
     {
       key: 'memory',
+      group: 'specialized',
       optionKey: 'memoryModel',
       aliases: ['memory', 'memoryModel', 'memories', 'memoriesModel'],
       zhLabel: '记忆整理与提取',
@@ -72,6 +79,7 @@
     },
     {
       key: 'commit',
+      group: 'specialized',
       optionKey: 'commitModel',
       aliases: ['commit', 'commitModel'],
       zhLabel: 'Git 提交信息生成',
@@ -82,9 +90,26 @@
     },
   ];
 
-  const EFFORT_OPTIONS = ['', 'none', 'low', 'medium', 'high', 'xhigh', 'max'];
+  const EFFORT_OPTIONS = ['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
   const SUBAGENT_PRESETS = ['explore', 'shell', 'generalPurpose', 'browser-use'];
+  const SUBAGENT_PRESET_INFO = {
+    explore: { zh: '代码库检索只读子代理', en: 'Read-only codebase exploration' },
+    shell: { zh: '终端命令执行子代理', en: 'Terminal command execution' },
+    generalPurpose: { zh: '通用多步任务子代理', en: 'General multi-step subagent' },
+    'browser-use': { zh: '浏览器自动化操作子代理', en: 'Browser automation subagent' },
+  };
   const CUSTOM_MODEL = '__custom__';
+
+  const PROVIDER_COLORS = [
+    '#4f46e5',
+    '#0ea5e9',
+    '#10b981',
+    '#f59e0b',
+    '#8b5cf6',
+    '#ec4899',
+    '#06b6d4',
+    '#64748b',
+  ];
 
   function isZh(lang) {
     return String(lang || '').toLowerCase().startsWith('zh');
@@ -120,6 +145,148 @@
     const cleanEffort = typeof effort === 'string' ? effort.trim() : '';
     if (!cleanEffort || cleanId.includes('[')) return cleanId;
     return `${cleanId}[reasoning=${cleanEffort}]`;
+  }
+
+  function splitModelDisplay(entryOrId, zh = true) {
+    const id = typeof entryOrId === 'string' ? entryOrId : String(entryOrId?.id || '');
+    const rawName = typeof entryOrId === 'object' && entryOrId?.name ? String(entryOrId.name) : '';
+    const prefix = id.includes('/') ? id.split('/')[0] : 'custom';
+    const sepIndex = rawName.lastIndexOf(' · ');
+    if (sepIndex > 0) {
+      const shortName = rawName.slice(0, sepIndex).trim();
+      const rawProvider = rawName.slice(sepIndex + 3).trim();
+      const providerLabel =
+        zh && rawProvider.toLowerCase() === 'routing group' ? '路由组' : rawProvider;
+      return {
+        id,
+        shortName: shortName || id,
+        providerKey: rawProvider.toLowerCase() || prefix.toLowerCase(),
+        providerLabel: providerLabel || prefix,
+      };
+    }
+    return {
+      id,
+      shortName: rawName || id,
+      providerKey: prefix.toLowerCase(),
+      providerLabel: prefix,
+    };
+  }
+
+  function providerColorFor(providerKey) {
+    const text = String(providerKey || '');
+    if (text === 'routing group' || text === 'auto' || text === 'group') return PROVIDER_COLORS[0];
+    if (text === 'cursor') return '#64748b';
+    if (text === 'workbuddy') return '#10b981';
+    if (text === 'kimi work' || text === 'kimi-work') return '#0ea5e9';
+    let hash = 0;
+    for (let i = 0; i < text.length; i += 1) {
+      hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+    }
+    return PROVIDER_COLORS[hash % PROVIDER_COLORS.length];
+  }
+
+  function formatContextLabel(context) {
+    const num = Number(context);
+    if (!Number.isFinite(num) || num <= 0) return '';
+    if (num === 1048576 || num === 1048000 || num === 1000000) return '1M';
+    if (num >= 1_000_000) {
+      return `${(num / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+    }
+    if (num === 262144) return '256K';
+    if (num >= 1000) return `${Math.round(num / 1000)}K`;
+    return String(num);
+  }
+
+  function getModelEntry(models, modelId) {
+    if (!modelId || !Array.isArray(models)) return null;
+    return models.find(entry => entry && entry.id === modelId) || null;
+  }
+
+  function getEffortChoices(models, modelId, currentEffort = '', zh = true) {
+    const cleanCurrent = typeof currentEffort === 'string' && currentEffort !== 'none' ? currentEffort.trim() : '';
+    const entry = getModelEntry(models, modelId);
+    const hasKnownCatalogEfforts = entry && Array.isArray(entry.efforts);
+    let allowed;
+    if (hasKnownCatalogEfforts) {
+      const seen = new Set(
+        entry.efforts
+          .map(v => String(v || '').trim().toLowerCase())
+          .filter(v => v && v !== 'none' && v !== 'default')
+      );
+      const ordered = EFFORT_OPTIONS.slice(1).filter(v => seen.has(v));
+      for (const extra of seen) {
+        if (!ordered.includes(extra)) ordered.push(extra);
+      }
+      allowed = ordered;
+    } else {
+      allowed = EFFORT_OPTIONS.slice(1);
+    }
+    const choices = [{ value: '', label: zh ? '默认强度' : 'Default', unsupported: false }];
+    for (const effort of allowed) {
+      choices.push({ value: effort, label: effort, unsupported: false });
+    }
+    if (cleanCurrent && !allowed.includes(cleanCurrent)) {
+      choices.push({
+        value: cleanCurrent,
+        label: zh ? `${cleanCurrent} (目录未列出)` : `${cleanCurrent} (unlisted)`,
+        unsupported: true,
+      });
+    }
+    return {
+      choices,
+      supportsEffort: !hasKnownCatalogEfforts || allowed.length > 0 || Boolean(cleanCurrent),
+    };
+  }
+
+  function filterAndGroupModels(models, { query = '', provider = '', zh = true } = {}) {
+    const list = Array.isArray(models) ? models : [];
+    const providersMap = new Map();
+    const enriched = [];
+    for (const entry of list) {
+      if (!entry || typeof entry.id !== 'string' || !entry.id.trim()) continue;
+      const meta = splitModelDisplay(entry, zh);
+      enriched.push({ ...entry, ...meta });
+      const bucket = providersMap.get(meta.providerKey) || {
+        key: meta.providerKey,
+        label: meta.providerLabel,
+        color: providerColorFor(meta.providerKey),
+        count: 0,
+      };
+      bucket.count += 1;
+      providersMap.set(meta.providerKey, bucket);
+    }
+    const tokens = String(query || '')
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
+    const activeProvider = String(provider || '').trim().toLowerCase();
+    const filtered = enriched.filter(item => {
+      if (activeProvider && item.providerKey !== activeProvider) return false;
+      if (tokens.length === 0) return true;
+      const haystack = `${item.id} ${item.name || ''} ${item.shortName} ${item.providerLabel}`.toLowerCase();
+      return tokens.every(token => haystack.includes(token));
+    });
+    const groupsMap = new Map();
+    for (const item of filtered) {
+      let group = groupsMap.get(item.providerKey);
+      if (!group) {
+        group = {
+          key: item.providerKey,
+          label: item.providerLabel,
+          color: providerColorFor(item.providerKey),
+          items: [],
+        };
+        groupsMap.set(item.providerKey, group);
+      }
+      group.items.push(item);
+    }
+    return {
+      total: enriched.length,
+      providers: [...providersMap.values()],
+      filtered,
+      groups: [...groupsMap.values()],
+    };
   }
 
   function readOptionsToFormState(rawOptions) {
@@ -290,7 +457,6 @@
           const trimmed = customInput.value.trim();
           const matchingOpt = Array.from(modelSelect.options).find(opt => opt.value === trimmed);
           modelSelect.value = matchingOpt ? trimmed : trimmed ? CUSTOM_MODEL : '';
-          customInput.hidden = Boolean(matchingOpt) || !trimmed;
         });
         inputsRow.append(modelSelect, customInput);
       } else {
@@ -308,6 +474,9 @@
       for (const effortOpt of EFFORT_OPTIONS) {
         const label = effortOpt ? `reasoning=${effortOpt}` : zh ? '默认强度' : 'Default effort';
         effortSelect.appendChild(createOptionElement(effortOpt, label));
+      }
+      if (parsed.effort && !EFFORT_OPTIONS.includes(parsed.effort)) {
+        effortSelect.appendChild(createOptionElement(parsed.effort, `reasoning=${parsed.effort}`));
       }
       effortSelect.value = parsed.effort || '';
       inputsRow.appendChild(effortSelect);
@@ -358,7 +527,6 @@
         const trimmed = modelInput.value.trim();
         const matchingOpt = Array.from(selectEl.options).find(opt => opt.value === trimmed);
         selectEl.value = matchingOpt ? trimmed : trimmed ? CUSTOM_MODEL : '';
-        modelInput.hidden = Boolean(matchingOpt) || !trimmed;
       });
       row.appendChild(selectEl);
     }
@@ -368,6 +536,9 @@
     for (const effortOpt of EFFORT_OPTIONS) {
       const label = effortOpt ? effortOpt : zh ? '默认' : 'default';
       effortSelect.appendChild(createOptionElement(effortOpt, label));
+    }
+    if (parsed.effort && !EFFORT_OPTIONS.includes(parsed.effort)) {
+      effortSelect.appendChild(createOptionElement(parsed.effort, parsed.effort));
     }
     effortSelect.value = parsed.effort || '';
 
@@ -392,19 +563,23 @@
     const roles = { ...baseRoles };
     for (const card of rolesGridEl.querySelectorAll('.cb-role-item')) {
       const roleKey = card.dataset.roleKey;
+      const selectEl = card.querySelector('.cb-model-select');
       const inputEl = card.querySelector('.cb-model-input');
       const effortEl = card.querySelector('.cb-effort-select');
       if (!roleKey || !inputEl) continue;
-      roles[roleKey] = formatModelRef(inputEl.value, effortEl?.value || '');
+      const rawModel = selectEl && selectEl.value !== CUSTOM_MODEL ? selectEl.value : inputEl.value;
+      roles[roleKey] = formatModelRef(rawModel, effortEl?.value || '');
     }
     const subagentTypes = {};
     if (subagentListEl) {
       for (const row of subagentListEl.querySelectorAll('.cb-subtype-row')) {
         const typeInput = row.querySelector('.cb-subtype-key');
+        const selectEl = row.querySelector('.cb-subtype-select');
         const textInput = row.querySelector('.cb-subtype-model');
         const effortEl = row.querySelector('.cb-effort-select');
         const cleanType = String(typeInput?.value || '').replace(/[\r\n\0]/g, '').trim();
-        const formatted = formatModelRef(textInput?.value || '', effortEl?.value || '');
+        const rawModel = selectEl && selectEl.value !== CUSTOM_MODEL ? selectEl.value : textInput?.value || '';
+        const formatted = formatModelRef(rawModel, effortEl?.value || '');
         if (cleanType && formatted) {
           subagentTypes[cleanType] = formatted;
         }
@@ -416,7 +591,17 @@
   globalThis.CursorBridgeUI = {
     ROLE_DEFS,
     SUBAGENT_PRESETS,
+    SUBAGENT_PRESET_INFO,
+    EFFORT_OPTIONS,
     isZh,
+    parseModelRef,
+    formatModelRef,
+    splitModelDisplay,
+    providerColorFor,
+    formatContextLabel,
+    getModelEntry,
+    getEffortChoices,
+    filterAndGroupModels,
     readOptionsToFormState,
     buildOptionsPayload,
     buildServiceRolesPayload,

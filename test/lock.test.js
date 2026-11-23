@@ -40,3 +40,15 @@ test('releaseLock does not remove lock taken over by a newer owner', testCtx => 
   releaseLock(lockDir, owner);
   assert.equal(fs.existsSync(lockDir), true);
 });
+
+test('releaseLock does not delete lockDir when owner.json is missing or unreadable', testCtx => {
+  const lockDir = tempLock(testCtx);
+  const owner = claimLock(lockDir);
+  fs.writeFileSync(path.join(lockDir, 'owner.json'), '{truncated');
+  releaseLock(lockDir, owner);
+  assert.equal(fs.existsSync(lockDir), true);
+
+  fs.unlinkSync(path.join(lockDir, 'owner.json'));
+  releaseLock(lockDir, owner);
+  assert.equal(fs.existsSync(lockDir), true);
+});

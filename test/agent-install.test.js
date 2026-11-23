@@ -9,8 +9,10 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { agent, connect } from '../agent.js';
 import { activate, label, paths, plistText, stage, verifyPackage } from '../lib/install.js';
+import { claimLock, releaseLock } from '../lib/lock.js';
 import {
   createConfigService,
+  ensureBridgeStarted,
   publishCatalogAsset,
   readSafeState,
   startManagedConfigService,
@@ -73,6 +75,7 @@ test('stage creates isolated immutable releases without node_modules or opaque b
   assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'catalog.js')));
   assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'page.html')));
   assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'service.html')));
+  assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'magpie-bridge.js')));
   assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'shared.js')));
   assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'style.css')));
   assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'icon.svg')));
@@ -90,6 +93,9 @@ test('plistText escapes XML entities and activate rolls back failed bootstrap', 
   const xml = plistText(targetPaths, '/tmp/A & B/runtime', '/tmp/A < B/release');
   assert.match(xml, /A &amp; B/);
   assert.match(xml, /A &lt; B/);
+  const quotedXml = plistText(targetPaths, '/tmp/"A"/runtime', "/tmp/'B'/release");
+  assert.match(quotedXml, /&quot;A&quot;/);
+  assert.match(quotedXml, /&apos;B&apos;/);
 
   if (process.platform !== 'win32') {
     fs.mkdirSync(path.dirname(targetPaths.plist), { recursive: true });
@@ -219,8 +225,8 @@ test('service.js config service hides gateway secrets, validates loopback header
       key: 'top-secret-gateway-key',
       model: 'magpie/main',
       models: [
-        { id: 'magpie/main', name: 'Main Model', context: 200000 },
-        { id: 'magpie/fast', name: 'Fast Model', context: 128000 },
+        { id: 'magpie/main', name: 'Main Model', context: 200000, efforts: ['low', 'high', 'ultra'], fast: true },
+        { id: 'magpie/fast', name: 'Fast Model', context: 128000, efforts: ['low', 'high'], fast: false },
       ],
     })
   );
@@ -238,6 +244,8 @@ test('service.js config service hides gateway secrets, validates loopback header
   const safeBefore = readSafeState({ rootDir, includeMagpiePlugins: false });
   assert.equal(JSON.stringify(safeBefore).includes('top-secret-gateway-key'), false);
   assert.equal(safeBefore.models.length, 2);
+  assert.deepEqual(safeBefore.models[0].efforts, ['low', 'high', 'ultra']);
+  assert.equal(safeBefore.models[0].fast, true);
   assert.equal(safeBefore.status?.port, 52407);
   assert.equal(safeBefore.status?.detail, 'Bridge active');
   assert.equal(safeBefore.status?.modelsCount, 2);
@@ -320,6 +328,41 @@ test('service.js config service hides gateway secrets, validates loopback header
 
   const directWrite = writeRolesFile(rootDir, { commitModel: 'magpie/fast' });
   assert.equal(directWrite.commit, 'magpie/fast');
+
+  const iconResp = await fetch(`http://127.0.0.1:${service.port}/favicon.ico`);
+  assert.equal(iconResp.status, 200);
+
+  const sseController = new AbortController();
+  const sseResp = await fetch(`http://127.0.0.1:${service.port}/api/events`, {
+    signal: sseController.signal,
+  });
+  assert.equal(sseResp.status, 200);
+  assert.match(sseResp.headers.get('content-type') || '', /text\/event-stream/);
+  const reader = sseResp.body.getReader();
+  const decoder = new TextDecoder();
+  let sseText = '';
+  while (!sseText.includes('\n\n')) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    sseText += decoder.decode(value, { stream: true });
+  }
+  assert.match(sseText, /event: state/);
+  assert.equal(sseText.includes('top-secret-gateway-key'), false);
+  assert.match(sseText, /"commit":"magpie\/fast"/);
+
+  sseText = '';
+  const pushPromise = fetch(`http://127.0.0.1:${service.port}/api/roles`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ commitModel: 'magpie/main[reasoning=ultra]' }),
+  });
+  while (!sseText.includes('magpie/main[reasoning=ultra]')) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    sseText += decoder.decode(value, { stream: true });
+  }
+  assert.equal((await pushPromise).status, 200);
+  sseController.abort();
 });
 
 test('publishCatalogAsset writes the Agents-page catalogue without gateway secrets', async testCtx => {
@@ -393,4 +436,28 @@ test('plugin.js exports only default entry and startManagedConfigService reclaim
     await new Promise(resolve => setTimeout(resolve, 40));
   }
   assert.equal(managed.role, 'owner');
+});
+
+test('ensureBridgeStarted routes version upgrade through setup instead of spawning duplicate supervisor', async testCtx => {
+  const rootDir = makeTemp(testCtx);
+  const fakeSource = makeTemp(testCtx);
+  fs.writeFileSync(path.join(fakeSource, 'package.json'), JSON.stringify({ version: '9.9.9' }));
+
+  const staged = path.join(makeTemp(testCtx), 'staged');
+  fs.mkdirSync(staged, { recursive: true });
+  fs.writeFileSync(path.join(staged, 'bridge.js'), '// should not be spawned directly\n');
+  fs.writeFileSync(path.join(staged, 'engine.js'), '// engine\n');
+
+  fs.writeFileSync(
+    path.join(rootDir, 'installation.json'),
+    JSON.stringify({ version: '9.9.9', release: staged })
+  );
+  fs.writeFileSync(path.join(rootDir, 'status.json'), JSON.stringify({ version: '9.9.8', state: 'connected' }));
+
+  const lockDir = path.join(rootDir, 'supervisor.lock');
+  const owner = claimLock(lockDir);
+  testCtx.after(() => releaseLock(lockDir, owner));
+
+  const res = await ensureBridgeStarted({ rootDir, sourceDir: fakeSource, noAutostart: false });
+  assert.equal(res.action, 'setup');
 });

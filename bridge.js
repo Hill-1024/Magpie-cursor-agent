@@ -10,9 +10,11 @@ import { loadMergedRoles, validateConfig, fetchGatewayModels } from './lib/confi
 import { claimLock, isLockHeld, releaseLock } from './lib/lock.js';
 import { readMagpieWired, nextMagpieGate } from './lib/magpie.js';
 import { shouldRevive } from './lib/watch.js';
-import { listenWithFallback } from './lib/relay.js';
+import { isPortAvailable, listenWithFallback } from './lib/relay.js';
 
-const relayPort = Number(process.env.CURSOR_BRIDGE_RELAY_PORT) || 52407;
+const rawRelayPort = process.env.CURSOR_BRIDGE_RELAY_PORT;
+const parsedRelayPort = rawRelayPort !== undefined && rawRelayPort !== '' ? Number(rawRelayPort) : 52407;
+const relayPort = Number.isInteger(parsedRelayPort) && parsedRelayPort >= 0 ? parsedRelayPort : 52407;
 const packageDir = path.dirname(fileURLToPath(import.meta.url));
 const version = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8')).version;
 const root =
@@ -20,7 +22,9 @@ const root =
 const defaultSettings =
   process.platform === 'win32'
     ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Cursor', 'User', 'settings.json')
-    : path.join(os.homedir(), 'Library', 'Application Support', 'Cursor', 'User', 'settings.json');
+    : process.platform === 'darwin'
+      ? path.join(os.homedir(), 'Library', 'Application Support', 'Cursor', 'User', 'settings.json')
+      : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'Cursor', 'User', 'settings.json');
 const settingsPath = process.env.CURSOR_BRIDGE_SETTINGS || defaultSettings;
 const engineScript = path.join(packageDir, 'engine.js');
 const stateFile = name => path.join(root, name);
@@ -69,6 +73,7 @@ async function runSupervise() {
   let magpieGate = null;
   let engineProxyUrl = null;
   let relayHandle = null;
+  let lastEffective = null;
   let cursorRestarted = false;
 
   const pauseLimit = 30;
@@ -146,6 +151,28 @@ async function runSupervise() {
     engineProxyUrl = proxyUrl;
     const upstreamPort = Number(new URL(proxyUrl).port);
     if (relayHandle) {
+      if (relayPort > 0 && relayHandle.port !== relayPort && (await isPortAvailable(relayPort))) {
+        const migrated = await listenWithFallback(
+          () => (engineProxyUrl ? Number(new URL(engineProxyUrl).port) : upstreamPort),
+          relayPort,
+          { attempts: 1, delayMs: 0 }
+        );
+        if (migrated.fixed) {
+          const oldRelay = relayHandle;
+          relayHandle = { server: migrated.relay, port: migrated.port };
+          try {
+            await oldRelay.server.close();
+          } catch {
+            // Ignore old relay close errors.
+          }
+        } else {
+          try {
+            await migrated.relay.close();
+          } catch {
+            // Ignore unused fallback relay close errors.
+          }
+        }
+      }
       return applyProxy(settingsPath, stateFile('settings-journal.json'), `http://127.0.0.1:${relayHandle.port}`);
     }
     const { relay, port, fixed } = await listenWithFallback(
@@ -193,7 +220,7 @@ async function runSupervise() {
       if (oldChild && oldChild.exitCode === null && oldChild.signalCode === null) {
         if (process.platform === 'win32') {
           try {
-            const killer = spawn('taskkill', ['/F', '/PID', String(oldChild.pid)], {
+            const killer = spawn('taskkill', ['/F', '/T', '/PID', String(oldChild.pid)], {
               stdio: 'ignore',
               windowsHide: true,
             });
@@ -204,6 +231,16 @@ async function runSupervise() {
                 // Ignore exit races.
               }
             });
+            let killTimer = null;
+            await Promise.race([
+              new Promise(resolve => oldChild.once('exit', resolve)),
+              new Promise(resolve => killer.once?.('exit', resolve)),
+              new Promise(resolve => {
+                killTimer = setTimeout(resolve, 5000);
+                killTimer.unref?.();
+              }),
+            ]);
+            if (killTimer) clearTimeout(killTimer);
           } catch {
             try {
               oldChild.kill();
@@ -350,8 +387,14 @@ async function runSupervise() {
           const childDead =
             !engineChild || engineChild.exitCode !== null || engineChild.signalCode !== null;
           if (changed || rolesChanged || Date.now() >= nextRefreshAt || childDead) {
-            const refreshed = await fetchGatewayModels(config);
+            let refreshed;
+            try {
+              refreshed = await fetchGatewayModels(config);
+            } catch {
+              refreshed = !changed && lastEffective ? lastEffective : config;
+            }
             const effective = { ...refreshed, roles: mergedRoles };
+            lastEffective = effective;
             nextRefreshAt = Date.now() + 4000;
             if (childDead) {
               await stopEngine();
@@ -377,6 +420,9 @@ async function runSupervise() {
               { force: true }
             );
           } else {
+            if (relayPort > 0 && relayHandle && relayHandle.port !== relayPort && engineProxyUrl) {
+              await publishProxy(engineProxyUrl);
+            }
             publishStatus('connected', {
               model: config.model,
               models: lastModelCount,

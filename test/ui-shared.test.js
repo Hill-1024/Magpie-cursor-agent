@@ -78,8 +78,80 @@ test('ui/shared.js normalizes aliases, preserves unrelated plugin options, and c
   });
 });
 
+test('ui/shared.js readFormStateFromDom prioritizes non-custom select values', () => {
+  const ui = loadSharedUi();
+  const rolesGridEl = {
+    querySelectorAll: selector => {
+      if (selector !== '.cb-role-item') return [];
+      return [
+        {
+          dataset: { roleKey: 'bugbot' },
+          querySelector: sel => {
+            if (sel === '.cb-model-select') return { value: 'magpie/new-catalog' };
+            if (sel === '.cb-model-input') return { value: 'old/custom' };
+            if (sel === '.cb-effort-select') return { value: 'high' };
+            return null;
+          },
+        },
+      ];
+    },
+  };
+  const parsed = ui.readFormStateFromDom(rolesGridEl, null);
+  assert.equal(parsed.roles.bugbot, 'magpie/new-catalog[reasoning=high]');
+});
+
+test('ui/shared.js groups models by provider, formats context, and filters model-supported efforts', () => {
+  const ui = loadSharedUi();
+  const models = [
+    {
+      id: 'auto/gpt-5.6-terra',
+      name: 'GPT-5.6 Terra · routing group',
+      context: 272000,
+      efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+      fast: false,
+    },
+    {
+      id: 'cursor/auto-smart',
+      name: 'Auto · Cursor',
+      context: 200000,
+      efforts: [],
+      fast: false,
+    },
+    {
+      id: 'workbuddy/claude-haiku-5.5',
+      name: 'Claude-Haiku-5.5 · WorkBuddy',
+      context: 1000000,
+      efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      fast: true,
+    },
+  ];
+
+  assert.equal(ui.formatContextLabel(1048576), '1M');
+  assert.equal(ui.formatContextLabel(262144), '256K');
+  assert.equal(ui.formatContextLabel(272000), '272K');
+
+  const grouped = ui.filterAndGroupModels(models, { query: 'haiku work', zh: true });
+  assert.equal(grouped.total, 3);
+  assert.equal(grouped.providers.length, 3);
+  assert.equal(grouped.filtered.length, 1);
+  assert.equal(grouped.groups[0].label, 'WorkBuddy');
+  assert.equal(grouped.groups[0].items[0].shortName, 'Claude-Haiku-5.5');
+
+  const terraEfforts = ui.getEffortChoices(models, 'auto/gpt-5.6-terra', '', true);
+  assert.equal(terraEfforts.supportsEffort, true);
+  assert.ok(terraEfforts.choices.some(choice => choice.value === 'ultra'));
+
+  const smartEfforts = ui.getEffortChoices(models, 'cursor/auto-smart', '', true);
+  assert.equal(smartEfforts.supportsEffort, false);
+  assert.equal(smartEfforts.choices.length, 1);
+
+  const preserved = ui.getEffortChoices(models, 'cursor/auto-smart', 'high', true);
+  assert.equal(preserved.supportsEffort, true);
+  assert.equal(preserved.choices[1].unsupported, true);
+});
+
 test('all ui/*.js files parse cleanly without syntax errors', () => {
-  for (const fileName of ['shared.js', 'catalog.js', 'panel.js', 'page.js', 'service.js']) {
+  for (const fileName of ['shared.js', 'catalog.js', 'panel.js', 'page.js', 'service.js', 'magpie-bridge.js']) {
     const source = fs.readFileSync(path.join(rootDir, 'ui', fileName), 'utf8');
     assert.doesNotThrow(() => new vm.Script(source, { filename: `ui/${fileName}` }));
   }

@@ -15,6 +15,7 @@ import {
   encodeCursor,
 } from '../lib/cursor-schemas.js';
 import { isCursorHost, startMitmProxy } from '../lib/mitm-proxy.js';
+import { streamOpenAiChat } from '../lib/openai-stream.js';
 import { generateLocalCa } from '../lib/x509.js';
 
 function openConnectTunnel(proxyPort, authority) {
@@ -495,4 +496,66 @@ test('role-specific unary and streaming auxiliary RPCs route to configured role 
     { model: 'role/bugbot-strong', effort: 'high' },
     { model: 'role/bugbot-strong', effort: 'high' },
   ]);
+});
+
+test('MITM proxy rejects unsupported Content-Encoding and streamOpenAiChat preserves valid usage/stop', async testCtx => {
+  const ca = generateLocalCa();
+  const mockGateway = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('data: {"choices":[{"delta":{"content":"  indented"}}]}\n\n');
+    res.write('data: {"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3}}\n\n');
+    res.write('data: {"choices":[{"finish_reason":null}],"usage":{}}\n\n');
+    res.end('data: [DONE]\n\n');
+  });
+  await new Promise(resolve => mockGateway.listen(0, '127.0.0.1', resolve));
+  testCtx.after(() => mockGateway.close());
+
+  const engine = new CursorBridgeEngine({
+    enabled: true,
+    gateway: `http://127.0.0.1:${mockGateway.address().port}/v1`,
+    key: 'test-key',
+    model: 'main/default',
+    models: [{ id: 'main/default', name: 'Main', context: 128000 }],
+  });
+  const proxy = await startMitmProxy({
+    engine,
+    caCertPem: ca.certPem,
+    caKeyPem: ca.keyPem,
+    allowAuthPassthrough: false,
+  });
+  testCtx.after(() => proxy.close());
+
+  const badEncodingResp = await h1PostOverProxy(
+    proxy.port,
+    ca.certPem,
+    '/aiserver.v1.AiService/AvailableModels',
+    Buffer.from('compressed-payload'),
+    'application/proto',
+    { 'Content-Encoding': 'zstd' }
+  );
+  assert.equal(badEncodingResp.status, 415);
+
+  let streamed = '';
+  const result = await streamOpenAiChat({
+    config: {
+      enabled: true,
+      gateway: `http://127.0.0.1:${mockGateway.address().port}/v1`,
+      key: 'test-key',
+      model: 'main/default',
+      models: [{ id: 'main/default', name: 'Main', context: 128000 }],
+    },
+    modelId: 'main/default',
+    messages: [{ role: 'user', content: 'hi' }],
+    onEvent: evt => {
+      if (evt.type === 'text_delta') streamed += evt.text;
+    },
+  });
+  assert.equal(streamed, '  indented');
+  assert.equal(result.finishReason, 'stop');
+  assert.deepEqual(result.usage, {
+    inputTokens: 10,
+    outputTokens: 3,
+    cacheReadTokens: null,
+    reasoningTokens: null,
+  });
 });

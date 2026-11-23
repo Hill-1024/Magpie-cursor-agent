@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { atomicWrite, restoreProxy } from './lib/settings.js';
+import { claimLock, releaseLock } from './lib/lock.js';
 import {
   activate,
   initializeCertificate,
@@ -46,7 +47,10 @@ function findMagpieBinary() {
     }
     const probe = runCommand('where', ['magpie.exe'], { optional: true });
     if (probe.status === 0 && probe.stdout.trim()) {
-      return probe.stdout.trim().split(/\r?\n/)[0];
+      for (const line of probe.stdout.trim().split(/\r?\n/)) {
+        const candidate = line.trim();
+        if (candidate && fs.existsSync(candidate)) return candidate;
+      }
     }
     return null;
   }
@@ -96,18 +100,18 @@ async function main() {
   }
 
   const lockDir = path.join(targetPaths.root, 'installer.lock');
-  try {
-    fs.mkdirSync(lockDir);
-  } catch {
-    throw new Error('另一个安装程序正在运行；若上次被强制终止，请检查后移除 installer.lock 再重试');
-  }
+  const installerOwner = claimLock(lockDir, {
+    busyMessage: '另一个安装程序正在运行；请等待其结束后重试',
+  });
 
   try {
     if (command === 'uninstall') {
       if (magpieBinary) runCommand(magpieBinary, ['cursor-bridge', 'default'], { optional: true });
       await stopJob(targetPaths, domain);
       restoreProxy(path.join(targetPaths.root, 'settings-journal.json'));
-      if (magpieBinary) runCommand(magpieBinary, ['plugin', 'rm', targetPaths.target], { optional: true });
+      if (magpieBinary && fs.existsSync(path.join(targetPaths.target, 'package.json'))) {
+        runCommand(magpieBinary, ['plugin', 'rm', targetPaths.target], { optional: true });
+      }
       if (targetPaths.plist && fs.existsSync(targetPaths.plist)) fs.unlinkSync(targetPaths.plist);
       if (targetPaths.startupScript && fs.existsSync(targetPaths.startupScript)) {
         fs.unlinkSync(targetPaths.startupScript);
@@ -159,11 +163,7 @@ async function main() {
     );
     console.log(`已成功安装并启动 v${manifest.version}。在 Magpie → Agents 选择 Cursor · Magpie Bridge 和模型即可开始使用。`);
   } finally {
-    try {
-      fs.rmdirSync(lockDir);
-    } catch {
-      // Ignore lock cleanup failure.
-    }
+    releaseLock(lockDir, installerOwner);
   }
 }
 

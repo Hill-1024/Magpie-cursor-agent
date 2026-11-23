@@ -69,3 +69,15 @@ test('clearStaleProxy cleans orphaned loopback proxy but spares manual user prox
   assert.deepEqual(clearStaleProxy(settingsPath), []);
   assert.equal(readSettingsDocument(settingsPath).data['http.proxy'], 'http://corp-proxy:8080');
 });
+
+test('applyProxy and restoreProxy respect effective value when duplicate http.proxy keys exist', testCtx => {
+  const [settingsPath, journalPath] = makeTemp(testCtx);
+  const dupSettings = '{\n  "http.proxy": "http://corp:8080",\n  "http.proxy": "http://corp:9090"\n}\n';
+  fs.writeFileSync(settingsPath, dupSettings);
+
+  assert.equal(applyProxy(settingsPath, journalPath, 'http://127.0.0.1:52407'), true);
+  assert.equal(readSettingsDocument(settingsPath).data['http.proxy'], 'http://127.0.0.1:52407');
+
+  assert.deepEqual(restoreProxy(journalPath), []);
+  assert.equal(readSettingsDocument(settingsPath).data['http.proxy'], 'http://corp:9090');
+});
