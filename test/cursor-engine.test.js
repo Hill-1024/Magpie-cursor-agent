@@ -1079,3 +1079,60 @@ test('AvailableModels exposes only each model context and effort capabilities', 
   assert.equal(values(small, 'fast'), undefined);
   assert.equal(small.supportsThinking, false);
 });
+
+test('fast is forwarded as priority only for models that support it', async testCtx => {
+  const requests = [];
+  const { ca, mockGateway, proxy } = await startRunSseProxy({
+    models: [
+      { id: 'group/auto', name: 'Auto', context: 200000, fast: false },
+      { id: 'cursor/grok-4.7@500k', name: 'Grok 500K', context: 500000, fast: true },
+      { id: 'auto/deepseek-v4.1-flash', name: 'DeepSeek', context: 1048000, fast: false },
+    ],
+    onGatewayRequest: (req, res) => {
+      const chunks = [];
+      req.on('data', chunk => chunks.push(chunk));
+      req.on('end', () => {
+        requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('data: {"choices":[{"delta":{"content":"FAST_OK"}}]}\n\n');
+        res.write('data: {"choices":[{"finish_reason":"stop"}]}\n\n');
+        res.end('data: [DONE]\n\n');
+      });
+    },
+  });
+  testCtx.after(() => proxy.close());
+  testCtx.after(() => mockGateway.close());
+
+  const run = async (requestId, modelId) => {
+    const done = streamRunSse({
+      proxyPort: proxy.port,
+      caCertPem: ca.certPem,
+      requestId,
+      onFrame: async () => {},
+    });
+    await bidiAppend(proxy.port, ca.certPem, requestId, 0, {
+      runRequest: {
+        conversationId: `conv-${requestId}`,
+        runId: requestId,
+        requestedModel: {
+          modelId,
+          parameters: [{ id: 'fast', value: 'true' }],
+        },
+        action: {
+          userMessageAction: {
+            userMessage: { text: 'Say FAST_OK', messageId: `m-${requestId}`, mode: 1 },
+          },
+        },
+      },
+    });
+    assert.deepEqual(await done, {});
+  };
+
+  await run('fast-supported', 'cursor/grok-4.7@500k');
+  await run('fast-unsupported', 'auto/deepseek-v4.1-flash');
+
+  assert.equal(requests[0].model, 'cursor/grok-4.7@500k');
+  assert.equal(requests[0].service_tier, 'priority');
+  assert.equal(requests[1].model, 'auto/deepseek-v4.1-flash');
+  assert.equal('service_tier' in requests[1], false);
+});
