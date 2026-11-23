@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { atomicWrite, applyProxy, restoreProxy, clearStaleProxy } from './lib/settings.js';
-import { validateConfig, fetchGatewayModels } from './lib/config.js';
+import { loadMergedRoles, validateConfig, fetchGatewayModels } from './lib/config.js';
 import { claimLock, isLockHeld, releaseLock } from './lib/lock.js';
 import { readMagpieWired, nextMagpieGate } from './lib/magpie.js';
 import { shouldRevive } from './lib/watch.js';
@@ -61,6 +61,7 @@ async function runSupervise() {
   let readyInfo = null;
   let ending = false;
   let lastConfigRaw = '';
+  let lastRolesSignature = '';
   let nextRefreshAt = 0;
   let paused = false;
   let lastModelCount = 0;
@@ -71,6 +72,18 @@ async function runSupervise() {
   let cursorRestarted = false;
 
   const pauseLimit = 30;
+
+  const defaultRoot = path.join(os.homedir(), '.config', 'magpie-cursor-bridge');
+  const allowPluginsJson =
+    Boolean(process.env.CURSOR_BRIDGE_PLUGINS_JSON) ||
+    path.resolve(root) === path.resolve(defaultRoot);
+  const readCurrentRoles = configRoles =>
+    loadMergedRoles({
+      rootDir: root,
+      configRoles,
+      includeMagpiePlugins: allowPluginsJson,
+      pluginsJsonPath: process.env.CURSOR_BRIDGE_PLUGINS_JSON || '',
+    });
 
   function watchAlive() {
     return isLockHeld(stateFile('watchdog.lock/owner.json'));
@@ -314,6 +327,7 @@ async function runSupervise() {
           publishStatus('disconnected', {}, { force: true });
           paused = false;
           lastConfigRaw = '';
+          lastRolesSignature = '';
         } else if (paused && raw === lastConfigRaw) {
           pausedRetries += 1;
           if (pausedRetries >= pauseLimit) {
@@ -330,10 +344,14 @@ async function runSupervise() {
           }
         } else {
           const changed = raw !== lastConfigRaw;
+          const mergedRoles = readCurrentRoles(config.roles || config);
+          const rolesSignature = JSON.stringify(mergedRoles);
+          const rolesChanged = rolesSignature !== lastRolesSignature;
           const childDead =
             !engineChild || engineChild.exitCode !== null || engineChild.signalCode !== null;
-          if (changed || Date.now() >= nextRefreshAt || childDead) {
-            const effective = await fetchGatewayModels(config);
+          if (changed || rolesChanged || Date.now() >= nextRefreshAt || childDead) {
+            const refreshed = await fetchGatewayModels(config);
+            const effective = { ...refreshed, roles: mergedRoles };
             nextRefreshAt = Date.now() + 4000;
             if (childDead) {
               await stopEngine();
@@ -342,6 +360,7 @@ async function runSupervise() {
               atomicWrite(stateFile('effective.json'), JSON.stringify(effective), { mode: 0o600 });
             }
             lastConfigRaw = raw;
+            lastRolesSignature = rolesSignature;
             paused = false;
             lastModelCount = effective.models.length;
             pausedRetries = 0;
@@ -350,6 +369,7 @@ async function runSupervise() {
               {
                 model: config.model,
                 models: lastModelCount,
+                roles: mergedRoles,
                 proxy: publicProxyUrl(),
                 backend: readyInfo.backend,
                 pid: engineChild.pid,
@@ -360,6 +380,7 @@ async function runSupervise() {
             publishStatus('connected', {
               model: config.model,
               models: lastModelCount,
+              roles: mergedRoles,
               proxy: publicProxyUrl(),
               backend: readyInfo.backend,
               pid: engineChild.pid,

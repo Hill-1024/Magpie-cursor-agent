@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateConfig } from './lib/config.js';
+import { loadMergedRoles, validateConfig } from './lib/config.js';
 import { CursorBridgeEngine } from './lib/cursor-engine.js';
 import { startMitmProxy } from './lib/mitm-proxy.js';
 import { initializeBridgeCa, loadBridgeCa } from './lib/x509.js';
@@ -21,11 +22,22 @@ function requireDataDir() {
 function readValidatedConnection(configPath) {
   const bytes = fs.readFileSync(configPath, 'utf8');
   const parsed = JSON.parse(bytes);
-  const validated = validateConfig({ enabled: true, ...parsed });
+  const rootDir = process.env.CURSOR_BRIDGE_ROOT || path.dirname(configPath);
+  const defaultRoot = path.join(os.homedir(), '.config', 'magpie-cursor-bridge');
+  const allowPluginsJson =
+    Boolean(process.env.CURSOR_BRIDGE_PLUGINS_JSON) ||
+    path.resolve(rootDir) === path.resolve(defaultRoot);
+  const mergedRoles = loadMergedRoles({
+    rootDir,
+    configRoles: parsed.roles || parsed,
+    includeMagpiePlugins: allowPluginsJson,
+    pluginsJsonPath: process.env.CURSOR_BRIDGE_PLUGINS_JSON || '',
+  });
+  const validated = validateConfig({ enabled: true, ...parsed, roles: mergedRoles });
   if (!validated) {
     throw new Error('Missing gateway, key, or selected model in connection config');
   }
-  return { raw: bytes, config: validated };
+  return { raw: bytes, rolesSig: JSON.stringify(mergedRoles), config: validated };
 }
 
 async function main() {
@@ -54,7 +66,7 @@ async function main() {
   }
   const { certPem, keyPem } = loadBridgeCa(dataDir);
   const configPath = path.resolve(argument);
-  let { raw: lastRaw, config } = readValidatedConnection(configPath);
+  let { raw: lastRaw, rolesSig: lastRolesSig, config } = readValidatedConnection(configPath);
 
   const engine = new CursorBridgeEngine(config);
   const proxy = await startMitmProxy({
@@ -92,15 +104,12 @@ async function main() {
 
   const reloadTimer = setInterval(() => {
     try {
-      const nextRaw = fs.readFileSync(configPath, 'utf8');
-      if (nextRaw === lastRaw) return;
-      const nextParsed = JSON.parse(nextRaw);
-      const nextConfig = validateConfig({ enabled: true, ...nextParsed });
-      if (nextConfig) {
-        engine.updateConfig(nextConfig);
-        lastRaw = nextRaw;
-        console.log(JSON.stringify({ event: 'catalogue', models: nextConfig.models.length }));
-      }
+      const next = readValidatedConnection(configPath);
+      if (next.raw === lastRaw && next.rolesSig === lastRolesSig) return;
+      engine.updateConfig(next.config);
+      lastRaw = next.raw;
+      lastRolesSig = next.rolesSig;
+      console.log(JSON.stringify({ event: 'catalogue', models: next.config.models.length }));
     } catch {
       // Retain last valid catalogue when file is mid-write or temporarily invalid.
     }

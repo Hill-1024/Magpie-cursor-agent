@@ -22,6 +22,45 @@ test('AvailableModelsAddition hides Auto using exact Cursor wire bytes', () => {
   assert.ok(decoded.displayConfiguration.namedModelsViewConfig.namedViewToRoutedModelViewNoButton);
 });
 
+test('AvailableModelsAddition Auto toggle configuration and InteractionUpdate.routedModel round-trip', () => {
+  const bytes = encodeCursor('AvailableModelsAddition', {
+    displayConfiguration: {
+      routedModelViewConfig: {
+        routedModelViewToNamedViewToggle: {
+          titleMarkdown: 'Auto',
+          subtitle: 'Balanced quality and speed, recommended for most tasks',
+          setToLastNamedModel: true,
+        },
+        hideSearchBar: false,
+      },
+      namedModelsViewConfig: {
+        namedViewToRoutedModelViewToggle: { markdown: 'Auto' },
+      },
+    },
+  });
+  const decoded = decodeCursor('AvailableModelsAddition', bytes);
+  assert.equal(
+    decoded.displayConfiguration.routedModelViewConfig.routedModelViewToNamedViewToggle.titleMarkdown,
+    'Auto'
+  );
+  assert.equal(
+    decoded.displayConfiguration.routedModelViewConfig.routedModelViewToNamedViewToggle.setToLastNamedModel,
+    true
+  );
+  assert.equal(
+    decoded.displayConfiguration.namedModelsViewConfig.namedViewToRoutedModelViewToggle.markdown,
+    'Auto'
+  );
+
+  const routedFrame = encodeCursor('AgentServerMessage', {
+    interactionUpdate: {
+      routedModel: { displayName: 'Claude Opus · anthropic/claude-opus' },
+    },
+  });
+  const decodedSrv = decodeCursor('AgentServerMessage', routedFrame);
+  assert.equal(decodedSrv.interactionUpdate.routedModel.displayName, 'Claude Opus · anthropic/claude-opus');
+});
+
 test('AgentClientMessage, AgentServerMessage, and BidiAppendRequest round-trip cleanly', () => {
   const clientMsg = {
     runRequest: {
@@ -65,4 +104,48 @@ test('toProtoValue and fromProtoValue round-trip nested JSON structs', () => {
   const sample = { path: 'a.ts', count: 3, dryRun: true, tags: ['x', 'y'], meta: { nested: null } };
   const roundTripped = fromProtoValue(toProtoValue(sample));
   assert.deepEqual(roundTripped, sample);
+});
+
+test('AvailableModelsAddition subagentModelConfigs map and role auxiliary messages round-trip', () => {
+  const catalogBytes = encodeCursor('AvailableModelsAddition', {
+    availableModels: [{ modelId: 'group/auto', displayName: 'Auto' }],
+    subagentModelConfigs: {
+      explore: { defaultModel: 'magpie/flash', fallbackModels: ['magpie/mini'] },
+      shell: { defaultModel: 'magpie/fast' },
+    },
+  });
+  const decodedCatalog = decodeCursor('AvailableModelsAddition', catalogBytes);
+  assert.equal(decodedCatalog.subagentModelConfigs.explore.defaultModel, 'magpie/flash');
+  assert.deepEqual(decodedCatalog.subagentModelConfigs.explore.fallbackModels, ['magpie/mini']);
+  assert.equal(decodedCatalog.subagentModelConfigs.shell.defaultModel, 'magpie/fast');
+
+  const bugBytes = encodeCursor('StreamBugBotResponse', {
+    bugReports: {
+      bugReports: [
+        {
+          description: 'Null pointer risk',
+          confidence: 0.9,
+          locations: [{ file: 'src/index.ts', startLine: 10, endLine: 14, codeLines: ['if (x)'] }],
+        },
+      ],
+    },
+  });
+  const decodedBug = decodeCursor('StreamBugBotResponse', bugBytes);
+  assert.equal(decodedBug.bugReports.bugReports[0].description, 'Null pointer risk');
+  assert.equal(decodedBug.bugReports.bugReports[0].locations[0].file, 'src/index.ts');
+
+  const nameBytes = encodeCursor('NameAgentRequest', {
+    userMessage: 'Refactor router',
+  });
+  assert.equal(decodeCursor('NameAgentRequest', nameBytes).userMessage, 'Refactor router');
+
+  const memBytes = encodeCursor('PotentiallyGenerateMemoryResponse', {
+    savedMemory: 'Use strict mode',
+    knowledgeId: 'kid-1',
+    title: 'Prefers TypeScript',
+  });
+  const decodedMem = decodeCursor('PotentiallyGenerateMemoryResponse', memBytes);
+  assert.equal(decodedMem.savedMemory, 'Use strict mode');
+  assert.equal(decodedMem.knowledgeId, 'kid-1');
+  assert.equal(decodedMem.title, 'Prefers TypeScript');
 });

@@ -2,11 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import http2 from 'node:http2';
+import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
 import zlib from 'node:zlib';
 import { CursorBridgeEngine } from '../lib/cursor-engine.js';
-import { decodeCursor, encodeCursor } from '../lib/cursor-schemas.js';
+import {
+  CONNECT_END_STREAM_FLAG,
+  decodeConnectFrames,
+  decodeCursor,
+  encodeConnectFrame,
+  encodeCursor,
+} from '../lib/cursor-schemas.js';
 import { isCursorHost, startMitmProxy } from '../lib/mitm-proxy.js';
 import { generateLocalCa } from '../lib/x509.js';
 
@@ -74,6 +81,38 @@ async function h1PostOverProxy(
   });
 }
 
+async function h1StreamOverProxy(proxyPort, caCertPem, pathName, bodyBuf) {
+  const tunnel = await openConnectTunnel(proxyPort, 'api2.cursor.sh:443');
+  const tlsSock = tls.connect({
+    socket: tunnel,
+    servername: 'api2.cursor.sh',
+    ca: caCertPem,
+    ALPNProtocols: ['http/1.1'],
+  });
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        host: 'api2.cursor.sh',
+        method: 'POST',
+        path: pathName,
+        headers: {
+          'Content-Type': 'application/connect+proto',
+          'Content-Length': bodyBuf.length,
+        },
+        createConnection: () => tlsSock,
+      },
+      res => {
+        const chunks = [];
+        res.on('data', chunk => chunks.push(chunk));
+        res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks) }));
+        res.on('error', reject);
+      }
+    );
+    req.on('error', reject);
+    req.end(bodyBuf);
+  });
+}
+
 test('isCursorHost restricts MITM strictly to Cursor domains', () => {
   assert.equal(isCursorHost('api2.cursor.sh'), true);
   assert.equal(isCursorHost('api3.cursor.sh.'), true);
@@ -136,18 +175,27 @@ test('MITM proxy handles Cursor HTTP/1.1 & HTTP/2 locally while tunneling non-Cu
   });
   assert.equal(rawEcho, 'RAW_PASSTHROUGH:hello-tcp');
 
-  // 2. AvailableModels returns local catalogue with Auto hidden and no upstream polling
+  // 2. AvailableModels returns local catalogue with native Auto enabled and no upstream polling
   const availResp = await h1PostOverProxy(proxy.port, ca.certPem, '/aiserver.v1.AiService/AvailableModels', Buffer.alloc(0));
   assert.equal(availResp.status, 200);
   const decodedAvail = decodeCursor('AvailableModelsAddition', availResp.body);
   assert.deepEqual(decodedAvail.modelNames, ['deepseek/deepseek-chat', 'group/auto']);
-  assert.equal(decodedAvail.displayConfiguration.routedModelViewConfig.hideRoutedModelView, true);
+  assert.notEqual(decodedAvail.displayConfiguration.routedModelViewConfig.hideRoutedModelView, true);
+  assert.equal(
+    decodedAvail.displayConfiguration.routedModelViewConfig.routedModelViewToNamedViewToggle.titleMarkdown,
+    'Auto'
+  );
+  assert.equal(
+    decodedAvail.displayConfiguration.namedModelsViewConfig.namedViewToRoutedModelViewToggle.markdown,
+    'Auto'
+  );
 
   // 3. GetUsableModels uses synthetic local credentials and never exposes Magpie's real gateway key
   const usableResp = await h1PostOverProxy(proxy.port, ca.certPem, '/agent.v1.AgentService/GetUsableModels', Buffer.alloc(0));
   const decodedUsable = decodeCursor('UsableModelsAddition', usableResp.body);
   assert.equal(decodedUsable.models[0].apiKeyCredentials.apiKey, 'cursor-magpie-local');
   assert.notEqual(decodedUsable.models[0].apiKeyCredentials.apiKey, 'secret-gateway-key');
+  assert.ok(decodedUsable.models.some(entry => entry.modelId === 'default' && entry.displayModelId === 'auto'));
 
   // 4. WriteGitCommitMessage routes through local Magpie gateway
   const commitReq = encodeCursor('WriteGitCommitMessageRequest', { diffs: ['+ console.log("hi");'] });
@@ -269,4 +317,180 @@ test('MITM proxy blocks analytics, telemetry, Statsig, and local-token auth loca
   );
   assert.equal(jsonTelemetryResp.status, 200);
   assert.deepEqual(JSON.parse(jsonTelemetryResp.body.toString('utf8')), {});
+});
+
+test('role-specific unary and streaming auxiliary RPCs route to configured role models', async testCtx => {
+  const ca = generateLocalCa();
+  const seenCalls = [];
+
+  const mockGateway = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      seenCalls.push({ model: payload.model, effort: payload.reasoning_effort || null });
+      const systemContent = String(payload.messages?.[0]?.content || '');
+      let replyText = 'ok';
+      if (systemContent.includes('Extract one durable')) {
+        replyText = JSON.stringify({ save: true, title: 'Prefers concise PRs', memory: 'Keep diffs small' });
+      } else if (systemContent.includes('Review the diff')) {
+        replyText = JSON.stringify({
+          summary: '1 issue',
+          bugs: [{ file: 'app.js', startLine: 3, endLine: 4, title: 'Leak', description: 'Unclosed handle', severity: 'high' }],
+        });
+      } else if (systemContent.includes('git branch name')) {
+        replyText = 'fix/role-routing';
+      } else if (systemContent.includes('git commit')) {
+        replyText = 'feat: add role routing';
+      } else if (systemContent.includes('concise 3-6 word')) {
+        replyText = 'Role Routing Setup';
+      } else {
+        replyText = 'Summary complete';
+      }
+      assert.equal(payload.stream, true);
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: replyText } }] })}\n\n`);
+      res.write('data: {"choices":[{"finish_reason":"stop"}]}\n\n');
+      res.end('data: [DONE]\n\n');
+    });
+  });
+  await new Promise(resolve => mockGateway.listen(0, '127.0.0.1', resolve));
+  testCtx.after(() => mockGateway.close());
+
+  const engine = new CursorBridgeEngine({
+    enabled: true,
+    gateway: `http://127.0.0.1:${mockGateway.address().port}/v1`,
+    key: 'secret-gateway-key',
+    model: 'main/default',
+    models: [{ id: 'main/default', name: 'Main', context: 128000 }],
+    roles: {
+      title: 'role/title-fast',
+      summarize: 'role/summary-mid',
+      memory: 'role/memory-llm',
+      bugbot: 'role/bugbot-strong[reasoning=high]',
+      commit: 'role/commit-fast',
+    },
+  });
+  const proxy = await startMitmProxy({
+    engine,
+    caCertPem: ca.certPem,
+    caKeyPem: ca.keyPem,
+    allowAuthPassthrough: false,
+  });
+  testCtx.after(() => proxy.close());
+
+  const nameResp = await h1PostOverProxy(
+    proxy.port,
+    ca.certPem,
+    '/agent.v1.AgentService/NameAgent',
+    encodeCursor('NameAgentRequest', { userMessage: 'Configure role routing' })
+  );
+  assert.equal(decodeCursor('NameAgentResponse', nameResp.body).name, 'Role Routing Setup');
+
+  const chatTitleResp = await h1PostOverProxy(
+    proxy.port,
+    ca.certPem,
+    '/aiserver.v1.AiService/GetChatTitle',
+    encodeCursor('GetChatTitleRequest', { conversation: [{ text: 'Add bugbot routing', type: 1 }] })
+  );
+  assert.equal(decodeCursor('GetChatTitleResponse', chatTitleResp.body).title, 'Role Routing Setup');
+
+  const branchResp = await h1PostOverProxy(
+    proxy.port,
+    ca.certPem,
+    '/aiserver.v1.AiService/WriteGitBranchName',
+    encodeCursor('WriteGitBranchNameRequest', { diffs: '+ role router' })
+  );
+  assert.equal(decodeCursor('WriteGitBranchNameResponse', branchResp.body).branchName, 'fix/role-routing');
+
+  const overviewResp = await h1PostOverProxy(
+    proxy.port,
+    ca.certPem,
+    '/agent.v1.AgentService/CreateTranscriptOverview',
+    encodeCursor('CreateTranscriptOverviewRequest', { formattedConversation: 'User: hi\nAssistant: done' })
+  );
+  assert.equal(decodeCursor('CreateTranscriptOverviewResponse', overviewResp.body).overview, 'Summary complete');
+
+  const summaryResp = await h1PostOverProxy(
+    proxy.port,
+    ca.certPem,
+    '/aiserver.v1.ChatService/GetConversationSummary',
+    encodeCursor('StreamUnifiedChatRequestLite', { conversation: [{ text: 'hello', type: 1 }] })
+  );
+  assert.equal(decodeCursor('ConversationSummary', summaryResp.body).summary, 'Summary complete');
+
+  const memoryResp = await h1PostOverProxy(
+    proxy.port,
+    ca.certPem,
+    '/aiserver.v1.AiService/PotentiallyGenerateMemory',
+    encodeCursor('PotentiallyGenerateMemoryRequest', {
+      requestId: 'mem-1',
+      conversation: [{ text: 'Always keep diffs small', type: 1 }],
+      composerId: 'comp-1',
+    })
+  );
+  const memoryDecoded = decodeCursor('PotentiallyGenerateMemoryResponse', memoryResp.body);
+  assert.equal(memoryDecoded.savedMemory, 'Keep diffs small');
+  assert.equal(memoryDecoded.title, 'Prefers concise PRs');
+
+  const commitResp = await h1PostOverProxy(
+    proxy.port,
+    ca.certPem,
+    '/aiserver.v1.AiService/WriteGitCommitMessage',
+    encodeCursor('WriteGitCommitMessageRequest', { diffs: ['+ feat'] })
+  );
+  assert.equal(decodeCursor('WriteGitCommitMessageResponse', commitResp.body).commitMessage, 'feat: add role routing');
+
+  const linterResp = await h1PostOverProxy(
+    proxy.port,
+    ca.certPem,
+    '/aiserver.v1.ReviewService/StreamBugBotLinter',
+    encodeCursor('StreamBugBotLinterRequest', {
+      gitDiff: { diffs: [{ from: 'app.js', to: 'app.js', chunks: [{ content: '+ handle()', lines: [] }] }] },
+      activeFile: 'app.js',
+      cursorLineNumberOneIndexed: 3,
+    })
+  );
+  const linterDecoded = decodeCursor('StreamBugBotLinterResponse', linterResp.body);
+  assert.equal(linterDecoded.bugs[0].title, 'Leak');
+
+  const streamBugResp = await h1StreamOverProxy(
+    proxy.port,
+    ca.certPem,
+    '/aiserver.v1.AiService/StreamBugBot',
+    encodeConnectFrame(encodeCursor('StreamBugBotRequest', {
+      gitDiff: { diffs: [{ from: 'app.js', to: 'app.js', chunks: [{ content: '+ handle()', lines: [] }] }] },
+    }))
+  );
+  assert.equal(streamBugResp.status, 200);
+  const bugFrames = decodeConnectFrames(streamBugResp.body).frames;
+  const reportFrame = bugFrames.find(frame => !(frame.flags & CONNECT_END_STREAM_FLAG) && decodeCursor('StreamBugBotResponse', frame.payload).bugReports);
+  assert.ok(reportFrame);
+  assert.equal(decodeCursor('StreamBugBotResponse', reportFrame.payload).bugReports.bugReports[0].title, 'Leak');
+
+  const diffReviewResp = await h1StreamOverProxy(
+    proxy.port,
+    ca.certPem,
+    '/aiserver.v1.AiService/StreamDiffReview',
+    encodeConnectFrame(encodeCursor('GetDiffReviewRequest', {
+      diffs: [{ relativeWorkspacePath: 'app.js', chunks: [{ oldLines: ['old'], newLines: ['new'] }] }],
+    }))
+  );
+  assert.equal(diffReviewResp.status, 200);
+  const reviewFrames = decodeConnectFrames(diffReviewResp.body).frames;
+  const reviewPayload = decodeCursor('StreamDiffReviewResponse', reviewFrames[0].payload);
+  assert.equal(reviewPayload.text, 'Summary complete');
+
+  assert.deepEqual(seenCalls, [
+    { model: 'role/title-fast', effort: null },
+    { model: 'role/title-fast', effort: null },
+    { model: 'role/title-fast', effort: null },
+    { model: 'role/summary-mid', effort: null },
+    { model: 'role/summary-mid', effort: null },
+    { model: 'role/memory-llm', effort: null },
+    { model: 'role/commit-fast', effort: null },
+    { model: 'role/bugbot-strong', effort: 'high' },
+    { model: 'role/bugbot-strong', effort: 'high' },
+    { model: 'role/bugbot-strong', effort: 'high' },
+  ]);
 });

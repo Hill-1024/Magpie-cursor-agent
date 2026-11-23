@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cursor Role Models</title>
+  <script src="_magpie/bridge.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="panel-mode">
+  <div class="cb-shell">
+    <section class="cb-card">
+      <div class="cb-header">
+        <div class="cb-title-group">
+          <h2 class="cb-title" id="panel-title">Cursor 分角色模型配置</h2>
+          <p class="cb-subtitle" id="panel-subtitle">
+            留空则沿用上方选定的主模型；格式支持 <span class="cb-code">modelId</span> 或 <span class="cb-code">modelId[reasoning=high]</span>。
+          </p>
+        </div>
+        <div class="cb-actions-bar">
+          <span class="cb-toast" id="panel-toast"></span>
+          <button type="button" class="cb-btn" id="panel-reload-btn">重新加载</button>
+          <button type="button" class="cb-btn cb-btn-primary" id="panel-save-btn">保存配置</button>
+        </div>
+      </div>
+
+      <div class="cb-grid" id="panel-roles-grid"></div>
+
+      <details class="cb-details" id="panel-subtypes-details">
+        <summary id="panel-subtypes-summary">子代理细分类型覆盖 (subagentTypeModels)</summary>
+        <div class="cb-subtypes-box">
+          <div id="panel-subtypes-list"></div>
+          <div class="cb-actions-bar">
+            <button type="button" class="cb-btn" id="panel-add-subtype-btn">+ 添加子代理类型映射</button>
+          </div>
+        </div>
+      </details>
+    </section>
+  </div>
+  <script src="shared.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>

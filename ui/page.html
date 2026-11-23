@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cursor Roles</title>
+  <script src="_magpie/bridge.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="cb-shell">
+    <section class="cb-card">
+      <div class="cb-header">
+        <div class="cb-title-group">
+          <h1 class="cb-title" id="page-title">Cursor 角色模型路由</h1>
+          <p class="cb-subtitle" id="page-subtitle">
+            为 Cursor 的子代理、Bugbot、SecurityBot、标题、摘要与记忆整理分别指定 Magpie 模型。
+          </p>
+        </div>
+        <div class="cb-actions-bar">
+          <span class="cb-pill" id="page-action-pill" hidden></span>
+          <button type="button" class="cb-btn" id="page-reset-btn">清空角色覆盖</button>
+          <button type="button" class="cb-btn cb-btn-primary" id="page-save-btn">保存到插件选项</button>
+        </div>
+      </div>
+
+      <div class="cb-banner">
+        <div>
+          <strong id="page-banner-title">需要从当前 Magpie 模型目录直接下拉选择并查看桥接状态？</strong>
+          <div class="cb-subtitle" id="page-banner-desc">
+            进入本地服务页可直接浏览实时模型列表、认证状态，并热写入 roles.json（无需重启插件宿主）。
+          </div>
+        </div>
+        <button type="button" class="cb-btn cb-btn-primary" id="page-open-service-btn">
+          打开实时模型选择器
+        </button>
+      </div>
+
+      <div class="cb-status-strip">
+        <span class="cb-toast" id="page-toast"></span>
+      </div>
+
+      <div class="cb-grid" id="page-roles-grid"></div>
+
+      <details class="cb-details" open>
+        <summary id="page-subtypes-summary">子代理类型专项映射 (subagentTypeModels)</summary>
+        <div class="cb-subtypes-box">
+          <div id="page-subtypes-list"></div>
+          <div class="cb-actions-bar">
+            <button type="button" class="cb-btn" id="page-add-subtype-btn">+ 添加子代理类型映射</button>
+          </div>
+        </div>
+      </details>
+    </section>
+  </div>
+  <script src="shared.js"></script>
+  <script src="page.js"></script>
+</body>
+</html>

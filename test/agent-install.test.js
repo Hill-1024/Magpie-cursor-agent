@@ -8,6 +8,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { agent, connect } from '../agent.js';
 import { activate, label, paths, plistText, stage, verifyPackage } from '../lib/install.js';
+import { createConfigService, readSafeState, writeRolesFile } from '../plugin.js';
 
 const sourceDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const manifest = JSON.parse(fs.readFileSync(path.join(sourceDir, 'package.json'), 'utf8'));
@@ -18,11 +19,13 @@ function makeTemp(testCtx) {
   return dir;
 }
 
-test('agent.js has zero top-level imports and returns Magpie connection metadata', () => {
+test('agent.js is pure moejs-safe and returns Magpie connection metadata with effort support', () => {
   const source = fs.readFileSync(path.join(sourceDir, 'agent.js'), 'utf8');
   const topImports = source.split('\n').filter(line => /^\s*import\s/.test(line));
   assert.deepEqual(topImports, []);
+  assert.equal(/node:|import\s*\(|\bprocess\b/.test(source), false);
   assert.equal(agent.id, 'cursor-bridge');
+  assert.equal(agent.effort, true);
   assert.equal(agent.config, '~/.config/magpie-cursor-bridge/connection.json');
   assert.equal(agent.format, 'json');
 
@@ -58,6 +61,13 @@ test('stage creates isolated immutable releases without node_modules or opaque b
   const releaseTwo = stage(sourceDir, targetPaths, manifest.version, process.execPath);
   assert.notEqual(releaseOne, releaseTwo);
   assert.ok(fs.existsSync(path.join(releaseOne, 'engine.js')));
+  assert.ok(fs.existsSync(path.join(releaseOne, 'plugin.js')));
+  assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'panel.html')));
+  assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'page.html')));
+  assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'service.html')));
+  assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'shared.js')));
+  assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'style.css')));
+  assert.ok(fs.existsSync(path.join(releaseOne, 'ui', 'icon.svg')));
   assert.equal(fs.existsSync(path.join(releaseOne, 'node_modules')), false);
   const run = spawnSync(process.execPath, [path.join(releaseOne, 'engine.js'), '--version'], {
     encoding: 'utf8',
@@ -164,9 +174,102 @@ test('bridge.js supervise starts engine, updates Cursor settings, and restores c
   assert.match(connectedStatus.proxy, /^http:\/\/127\.0\.0\.1:\d+$/);
   assert.notEqual(fs.readFileSync(settingsFile, 'utf8'), originalSettings);
 
+  fs.writeFileSync(
+    path.join(tempRoot, 'roles.json'),
+    JSON.stringify({ bugbot: 'group/bugbot-live', subagent: 'group/sub-live' })
+  );
+  let updatedRoles = null;
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(tempRoot, 'status.json'), 'utf8'));
+      if (parsed.roles?.bugbot === 'group/bugbot-live') {
+        updatedRoles = parsed.roles;
+        break;
+      }
+    } catch {
+      // Wait for status.json role reload.
+    }
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  assert.equal(updatedRoles?.bugbot, 'group/bugbot-live');
+  assert.equal(updatedRoles?.subagent, 'group/sub-live');
+
   bridgeProcess.kill('SIGTERM');
   await new Promise(resolve => bridgeProcess.once('exit', resolve));
   assert.equal(fs.readFileSync(settingsFile, 'utf8'), originalSettings);
   const stoppedStatus = JSON.parse(fs.readFileSync(path.join(tempRoot, 'status.json'), 'utf8'));
   assert.equal(stoppedStatus.state, 'stopped');
+});
+
+test('plugin.js config service hides gateway secrets, validates loopback headers, and persists roles.json', async testCtx => {
+  const rootDir = makeTemp(testCtx);
+  fs.writeFileSync(
+    path.join(rootDir, 'connection.json'),
+    JSON.stringify({
+      enabled: true,
+      gateway: 'http://127.0.0.1:3425/v1',
+      key: 'top-secret-gateway-key',
+      model: 'magpie/main',
+      models: [
+        { id: 'magpie/main', name: 'Main Model', context: 200000 },
+        { id: 'magpie/fast', name: 'Fast Model', context: 128000 },
+      ],
+    })
+  );
+
+  const safeBefore = readSafeState({ rootDir, includeMagpiePlugins: false });
+  assert.equal(JSON.stringify(safeBefore).includes('top-secret-gateway-key'), false);
+  assert.equal(safeBefore.models.length, 2);
+
+  const service = await createConfigService({
+    rootDir,
+    uiDir: path.join(sourceDir, 'ui'),
+    port: 0,
+    includeMagpiePlugins: false,
+  });
+  testCtx.after(() => service.close());
+
+  const htmlResp = await fetch(`http://127.0.0.1:${service.port}/`);
+  assert.equal(htmlResp.status, 200);
+  assert.match(await htmlResp.text(), /Cursor Bridge/);
+
+  const stateResp = await fetch(`http://127.0.0.1:${service.port}/api/state`, {
+    headers: { Origin: 'null' },
+  });
+  assert.equal(stateResp.status, 200);
+  const stateText = await stateResp.text();
+  assert.equal(stateText.includes('top-secret-gateway-key'), false);
+
+  const evilResp = await fetch(`http://127.0.0.1:${service.port}/api/state`, {
+    headers: { Origin: 'https://evil.example' },
+  });
+  assert.equal(evilResp.status, 403);
+
+  const saveResp = await fetch(`http://127.0.0.1:${service.port}/api/roles`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      autoRouterModel: 'cursor/auto',
+      subagentModel: 'magpie/fast[reasoning=low]',
+      bugbotModel: 'magpie/main',
+      securitybotModel: 'magpie/main[reasoning=high]',
+      titleModel: 'magpie/fast',
+      summarizeModel: 'magpie/fast',
+      memoryModel: 'magpie/fast',
+      subagentTypeModels: { explore: 'magpie/fast' },
+    }),
+  });
+  assert.equal(saveResp.status, 200);
+  const savedJson = await saveResp.json();
+  assert.equal(savedJson.roles.autoRouter, 'cursor/auto');
+  assert.equal(savedJson.roles.subagent, 'magpie/fast[reasoning=low]');
+  assert.equal(savedJson.roles.securitybot, 'magpie/main[reasoning=high]');
+
+  const diskRoles = JSON.parse(fs.readFileSync(path.join(rootDir, 'roles.json'), 'utf8'));
+  assert.equal(diskRoles.autoRouter, 'cursor/auto');
+  assert.equal(diskRoles.title, 'magpie/fast');
+  assert.deepEqual(diskRoles.subagentTypes, { explore: 'magpie/fast' });
+
+  const directWrite = writeRolesFile(rootDir, { commitModel: 'magpie/fast' });
+  assert.equal(directWrite.commit, 'magpie/fast');
 });

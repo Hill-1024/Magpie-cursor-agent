@@ -5,6 +5,7 @@ import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
 import { CursorBridgeEngine } from '../lib/cursor-engine.js';
+import { isCursorNativeAuto, parseRoutedModelReply } from '../lib/cursor-engine.js';
 import {
   CONNECT_END_STREAM_FLAG,
   decodeConnectFrames,
@@ -36,7 +37,7 @@ function openConnectTls(proxyPort, caCertPem) {
   });
 }
 
-async function bidiAppend(proxyPort, caCertPem, requestId, seqno, clientMessage) {
+async function bidiAppend(proxyPort, caCertPem, requestId, seqno, clientMessage, extraHeaders = {}) {
   const bytes = encodeCursor('AgentClientMessage', clientMessage);
   const body = encodeCursor('BidiAppendRequest', {
     data: bytes.toString('hex'),
@@ -45,11 +46,15 @@ async function bidiAppend(proxyPort, caCertPem, requestId, seqno, clientMessage)
   });
   const tlsSock = await openConnectTls(proxyPort, caCertPem);
   return new Promise((resolve, reject) => {
+    const extraLines = Object.entries(extraHeaders)
+      .map(([headerName, headerVal]) => `${headerName}: ${headerVal}\r\n`)
+      .join('');
     const header =
       `POST /aiserver.v1.BidiService/BidiAppend HTTP/1.1\r\n` +
       `Host: api2.cursor.sh\r\n` +
       `Content-Type: application/proto\r\n` +
       `Content-Length: ${body.length}\r\n` +
+      extraLines +
       `Connection: close\r\n\r\n`;
     tlsSock.write(Buffer.concat([Buffer.from(header), body]));
     const chunks = [];
@@ -284,24 +289,29 @@ test('end-to-end RunSSE + BidiAppend executes thinking, text, and StrReplace + S
   assert.equal(receivedPayloads[0].reasoning_effort, 'high');
 });
 
-async function startRunSseProxy({ onGatewayRequest }) {
+async function startRunSseProxy({ onGatewayRequest, roles = null, models = null }) {
   const ca = generateLocalCa();
   const mockGateway = http.createServer(onGatewayRequest);
   await new Promise(resolve => mockGateway.listen(0, '127.0.0.1', resolve));
-  const engine = new CursorBridgeEngine({
+  const catalogue = models || [{ id: 'group/auto', name: 'Auto', context: 200000 }];
+  const config = {
     enabled: true,
     gateway: `http://127.0.0.1:${mockGateway.address().port}/v1`,
     key: 'test-key',
     model: 'group/auto',
-    models: [{ id: 'group/auto', name: 'Auto', context: 200000 }],
-  });
+    models: catalogue,
+  };
+  if (roles) {
+    config.roles = roles;
+  }
+  const engine = new CursorBridgeEngine(config);
   const proxy = await startMitmProxy({
     engine,
     caCertPem: ca.certPem,
     caKeyPem: ca.keyPem,
     allowAuthPassthrough: false,
   });
-  return { ca, mockGateway, proxy };
+  return { ca, engine, mockGateway, proxy };
 }
 
 async function streamRunSse({ proxyPort, caCertPem, requestId, onFrame }) {
@@ -539,4 +549,409 @@ test('CancelAction aborts active OpenAI SSE stream cleanly with canceled status'
   const endJson = await runDone;
   await gatewayClosed;
   assert.equal(endJson.error?.code, 'canceled');
+});
+
+test('AvailableModels populates subagentModelConfigs and RunSSE routes role models', async testCtx => {
+  const gatewayRequests = [];
+  const roles = {
+    subagent: 'magpie/sub-default',
+    subagentTypes: { explore: 'magpie/explore-fast[reasoning=low]' },
+    bugbot: 'magpie/bug-sonnet',
+    securitybot: 'magpie/sec-opus[reasoning=xhigh]',
+    summarize: 'magpie/compact-llm',
+    memory: 'magpie/mem-llm',
+  };
+  const models = [
+    { id: 'group/auto', name: 'Auto', context: 200000 },
+    { id: 'magpie/sub-default', name: 'Sub Default', context: 128000 },
+    { id: 'magpie/explore-fast', name: 'Explore Fast', context: 128000 },
+    { id: 'magpie/bug-sonnet', name: 'Bug Sonnet', context: 200000 },
+    { id: 'magpie/sec-opus', name: 'Sec Opus', context: 200000 },
+    { id: 'magpie/compact-llm', name: 'Compact LLM', context: 200000 },
+    { id: 'magpie/mem-llm', name: 'Memory LLM', context: 128000 },
+  ];
+  const { ca, engine, mockGateway, proxy } = await startRunSseProxy({
+    roles,
+    models,
+    onGatewayRequest: (req, res) => {
+      const chunks = [];
+      req.on('data', chunk => chunks.push(chunk));
+      req.on('end', () => {
+        const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        gatewayRequests.push({ model: payload.model, effort: payload.reasoning_effort || null });
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('data: {"choices":[{"delta":{"content":"ROLE_OK"}}]}\n\n');
+        res.write('data: {"choices":[{"finish_reason":"stop"}]}\n\n');
+        res.end('data: [DONE]\n\n');
+      });
+    },
+  });
+  testCtx.after(() => proxy.close());
+  testCtx.after(() => mockGateway.close());
+
+  const availBytes = engine.buildAvailableModelsResponse(false);
+  const availDecoded = decodeCursor('AvailableModelsAddition', availBytes);
+  assert.equal(availDecoded.subagentModelConfigs.explore.defaultModel, 'magpie/explore-fast');
+  assert.equal(availDecoded.subagentModelConfigs.shell.defaultModel, 'magpie/sub-default');
+  assert.equal(availDecoded.subagentModelConfigs.generalPurpose.defaultModel, 'magpie/sub-default');
+
+  const runScenario = async (requestId, runRequest, headers = {}) => {
+    const runDone = streamRunSse({
+      proxyPort: proxy.port,
+      caCertPem: ca.certPem,
+      requestId,
+      onFrame: async () => {},
+    });
+    await bidiAppend(proxy.port, ca.certPem, requestId, 0, { runRequest }, headers);
+    const endJson = await runDone;
+    assert.deepEqual(endJson, {});
+  };
+
+  await runScenario(
+    'req-role-sub-parent',
+    {
+      conversationId: 'conv-sub',
+      runId: 'req-role-sub-parent',
+      action: {
+        userMessageAction: {
+          userMessage: { text: 'Inspect files', messageId: 'm1', mode: 1 },
+          requestContext: { env: { workspacePaths: ['/tmp/ws'] } },
+        },
+      },
+    },
+    { 'x-parent-request-id': 'root-req-1' }
+  );
+
+  await runScenario('req-role-explore', {
+    conversationId: 'conv-explore',
+    runId: 'req-role-explore',
+    subagentTypeName: 'explore',
+    action: {
+      userMessageAction: {
+        userMessage: { text: 'Find handlers', messageId: 'm2', mode: 1 },
+        requestContext: { env: { workspacePaths: ['/tmp/ws'] } },
+      },
+    },
+  });
+
+  await runScenario('req-role-sec', {
+    conversationId: 'conv-sec',
+    runId: 'req-role-sec',
+    subagentTypeName: 'securitybot',
+    action: {
+      userMessageAction: {
+        userMessage: { text: 'Audit auth', messageId: 'm3', mode: 1 },
+        requestContext: { env: { workspacePaths: ['/tmp/ws'] } },
+      },
+    },
+  });
+
+  await runScenario('req-role-bugbot', {
+    conversationId: 'conv-bug',
+    runId: 'req-role-bugbot',
+    harness: 'bugbot',
+    action: {
+      userMessageAction: {
+        userMessage: { text: 'Review diff', messageId: 'm4', mode: 1 },
+        requestContext: { env: { workspacePaths: ['/tmp/ws'] } },
+      },
+    },
+  });
+
+  await runScenario('req-role-summarize', {
+    conversationId: 'conv-sum',
+    runId: 'req-role-summarize',
+    action: {
+      summarizeAction: {
+        requestContext: { env: { workspacePaths: ['/tmp/ws'] } },
+      },
+    },
+  });
+
+  await runScenario('req-role-memory', {
+    conversationId: 'conv-mem',
+    runId: 'req-role-memory',
+    customSystemPrompt: '<memory_generation>Consolidate memories</memory_generation>',
+    action: {
+      userMessageAction: {
+        userMessage: { text: 'Extract facts', messageId: 'm5', mode: 1 },
+        requestContext: { env: { workspacePaths: ['/tmp/ws'] } },
+      },
+    },
+  });
+
+  assert.deepEqual(gatewayRequests, [
+    { model: 'magpie/sub-default', effort: null },
+    { model: 'magpie/explore-fast', effort: 'low' },
+    { model: 'magpie/sec-opus', effort: 'xhigh' },
+    { model: 'magpie/bug-sonnet', effort: null },
+    { model: 'magpie/compact-llm', effort: null },
+    { model: 'magpie/mem-llm', effort: null },
+  ]);
+});
+
+test('isCursorNativeAuto and parseRoutedModelReply isolate cursor/auto and parse router replies safely', () => {
+  const catalogue = [
+    { id: 'cursor/auto', name: 'Cursor Auto', context: 200000 },
+    { id: 'openai/gpt-5', name: 'GPT-5', context: 200000 },
+    { id: 'openai/gpt-5-mini', name: 'GPT-5 Mini', context: 200000 },
+    { id: 'anthropic/claude-opus', name: 'Claude Opus', context: 200000 },
+  ];
+  assert.equal(isCursorNativeAuto('default', { models: catalogue }), true);
+  assert.equal(isCursorNativeAuto('auto', { models: catalogue }), true);
+  assert.equal(isCursorNativeAuto('auto-low', { models: catalogue }), true);
+  assert.equal(isCursorNativeAuto('cursor/auto', { models: catalogue }), false);
+  assert.equal(isCursorNativeAuto('group/auto', { models: catalogue }), false);
+  assert.equal(isCursorNativeAuto('', { models: catalogue }), false);
+
+  assert.equal(
+    parseRoutedModelReply('<think>compare models</think>\n```json\n{"model":"anthropic/claude-opus"}\n```', catalogue),
+    'anthropic/claude-opus'
+  );
+  assert.equal(
+    parseRoutedModelReply('Select openai/gpt-5-mini for this small task.', catalogue),
+    'openai/gpt-5-mini'
+  );
+  assert.equal(parseRoutedModelReply('{"model":"cursor/auto"}', catalogue), 'cursor/auto');
+  assert.equal(parseRoutedModelReply('unknown-model-xyz', catalogue), null);
+});
+
+test('Auto routing supports Links 1, 2, 3, and 4 with strict single-hop anti-loop guarantees', async testCtx => {
+  const recordedCalls = [];
+  let routerReplyText = '{"model":"magpie/coder-opus"}';
+  const catalogue = [
+    { id: 'cursor/auto', name: 'Cursor Auto', context: 200000 },
+    { id: 'role/router-fast', name: 'Router Fast', context: 128000 },
+    { id: 'magpie/coder-opus', name: 'Coder Opus', context: 200000 },
+    { id: 'magpie/main-fallback', name: 'Main Fallback', context: 200000 },
+  ];
+
+  const ca = generateLocalCa();
+  const mockGateway = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      const isRouterCall =
+        Array.isArray(payload.messages) &&
+        payload.messages[0]?.role === 'system' &&
+        String(payload.messages[0].content || '').includes('model router for Magpie Cursor Bridge');
+      recordedCalls.push({
+        model: payload.model,
+        effort: payload.reasoning_effort || null,
+        isRouterCall,
+        toolCount: Array.isArray(payload.tools) ? payload.tools.length : 0,
+      });
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const replyText = isRouterCall ? routerReplyText : `EXEC_WITH_${payload.model}`;
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: replyText } }] })}\n\n`);
+      res.write('data: {"choices":[{"finish_reason":"stop"}]}\n\n');
+      res.end('data: [DONE]\n\n');
+    });
+  });
+  await new Promise(resolve => mockGateway.listen(0, '127.0.0.1', resolve));
+  testCtx.after(() => mockGateway.close());
+
+  const config = {
+    enabled: true,
+    gateway: `http://127.0.0.1:${mockGateway.address().port}/v1`,
+    key: 'test-key',
+    model: 'magpie/main-fallback',
+    models: catalogue,
+    roles: { autoRouter: 'role/router-fast[reasoning=low]' },
+  };
+  const engine = new CursorBridgeEngine(config);
+  const proxy = await startMitmProxy({
+    engine,
+    caCertPem: ca.certPem,
+    caKeyPem: ca.keyPem,
+    allowAuthPassthrough: false,
+  });
+  testCtx.after(() => proxy.close());
+
+  const runPrompt = async (requestId, requestedModel) => {
+    let text = '';
+    const routedLabels = [];
+    const runDone = streamRunSse({
+      proxyPort: proxy.port,
+      caCertPem: ca.certPem,
+      requestId,
+      onFrame: async serverMessage => {
+        if (serverMessage.interactionUpdate?.textDelta) {
+          text += serverMessage.interactionUpdate.textDelta.text;
+        } else if (serverMessage.interactionUpdate?.routedModel) {
+          routedLabels.push(serverMessage.interactionUpdate.routedModel.displayName);
+        }
+      },
+    });
+    await bidiAppend(proxy.port, ca.certPem, requestId, 0, {
+      runRequest: {
+        conversationId: `conv-${requestId}`,
+        runId: requestId,
+        requestedModel,
+        action: {
+          userMessageAction: {
+            userMessage: { text: 'Refactor auth module cleanly', messageId: `m-${requestId}`, mode: 1 },
+            requestContext: { env: { workspacePaths: ['/tmp/ws'] } },
+          },
+        },
+      },
+    });
+    const endJson = await runDone;
+    assert.deepEqual(endJson, {});
+    return { text, routedLabels };
+  };
+
+  // Link 1a: Cursor native Auto + configured autoRouter picks Magpie model
+  routerReplyText = '{"model":"magpie/coder-opus"}';
+  const link1a = await runPrompt('req-link-1a', {
+    modelId: 'default',
+    parameters: [{ id: 'reasoning', value: 'high' }],
+  });
+  assert.equal(link1a.text, 'EXEC_WITH_magpie/coder-opus');
+  assert.deepEqual(link1a.routedLabels, ['Coder Opus · magpie/coder-opus']);
+
+  // Link 1b: Configured autoRouter picks cursor/auto -> executes cursor/auto once without looping
+  routerReplyText = '{"model":"cursor/auto"}';
+  const link1b = await runPrompt('req-link-1b', { modelId: 'default' });
+  assert.equal(link1b.text, 'EXEC_WITH_cursor/auto');
+  assert.deepEqual(link1b.routedLabels, ['Cursor Auto · cursor/auto']);
+
+  // Link 3: User manually selects cursor/auto -> bypasses autoRouter completely
+  const link3 = await runPrompt('req-link-3', {
+    modelId: 'cursor/auto[context=200k,reasoning=medium,fast=false]',
+  });
+  assert.equal(link3.text, 'EXEC_WITH_cursor/auto');
+  assert.deepEqual(link3.routedLabels, []);
+
+  // Link 4 (default router = cursor/auto when autoRouter is empty & cursor/auto exists) + Link 2
+  engine.updateConfig({ ...config, roles: { autoRouter: '' } });
+  routerReplyText = '{"model":"magpie/coder-opus"}';
+  const link4 = await runPrompt('req-link-4', { modelId: 'default' });
+  assert.equal(link4.text, 'EXEC_WITH_magpie/coder-opus');
+
+  // Link 2 self-selection: cursor/auto as router returning cursor/auto still executes single-hop
+  engine.updateConfig({ ...config, roles: { autoRouter: 'cursor/auto' } });
+  routerReplyText = '{"model":"cursor/auto"}';
+  const link2Self = await runPrompt('req-link-2-self', { modelId: 'default' });
+  assert.equal(link2Self.text, 'EXEC_WITH_cursor/auto');
+
+  // Link 4 fallback: without autoRouter and without cursor/auto in catalogue, falls back directly to config.model
+  engine.updateConfig({
+    ...config,
+    models: catalogue.filter(entry => entry.id !== 'cursor/auto'),
+    roles: { autoRouter: '' },
+  });
+  const link4Fallback = await runPrompt('req-link-4-fallback', { modelId: 'default' });
+  assert.equal(link4Fallback.text, 'EXEC_WITH_magpie/main-fallback');
+
+  assert.deepEqual(recordedCalls, [
+    { model: 'role/router-fast', effort: 'low', isRouterCall: true, toolCount: 0 },
+    { model: 'magpie/coder-opus', effort: 'high', isRouterCall: false, toolCount: 9 },
+    { model: 'role/router-fast', effort: 'low', isRouterCall: true, toolCount: 0 },
+    { model: 'cursor/auto', effort: null, isRouterCall: false, toolCount: 9 },
+    { model: 'cursor/auto', effort: 'medium', isRouterCall: false, toolCount: 9 },
+    { model: 'cursor/auto', effort: null, isRouterCall: true, toolCount: 0 },
+    { model: 'magpie/coder-opus', effort: null, isRouterCall: false, toolCount: 9 },
+    { model: 'cursor/auto', effort: null, isRouterCall: true, toolCount: 0 },
+    { model: 'cursor/auto', effort: null, isRouterCall: false, toolCount: 9 },
+    { model: 'magpie/main-fallback', effort: null, isRouterCall: false, toolCount: 9 },
+  ]);
+});
+
+test('Auto routing falls back on router errors and aborts cleanly on CancelAction during routing', async testCtx => {
+  const seenModels = [];
+  let routerMode = 'error';
+  let resolveRouterStarted;
+  const routerStarted = new Promise(resolve => {
+    resolveRouterStarted = resolve;
+  });
+  let activeRouterRes = null;
+
+  const { ca, mockGateway, proxy } = await startRunSseProxy({
+    roles: { autoRouter: 'cursor/auto' },
+    models: [
+      { id: 'group/auto', name: 'Auto', context: 200000 },
+      { id: 'cursor/auto', name: 'Cursor Auto', context: 200000 },
+    ],
+    onGatewayRequest: (req, res) => {
+      const chunks = [];
+      req.on('data', chunk => chunks.push(chunk));
+      req.on('end', () => {
+        const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        seenModels.push(payload.model);
+        if (payload.model === 'cursor/auto') {
+          if (routerMode === 'error') {
+            res.writeHead(502, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: { message: 'router unavailable' } }));
+            return;
+          }
+          activeRouterRes = res;
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          resolveRouterStarted();
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('data: {"choices":[{"delta":{"content":"FALLBACK_OK"}}]}\n\n');
+        res.write('data: {"choices":[{"finish_reason":"stop"}]}\n\n');
+        res.end('data: [DONE]\n\n');
+      });
+    },
+  });
+  testCtx.after(() => activeRouterRes?.destroy());
+  testCtx.after(() => proxy.close());
+  testCtx.after(() => mockGateway.close());
+
+  let fallbackText = '';
+  const fallbackDone = streamRunSse({
+    proxyPort: proxy.port,
+    caCertPem: ca.certPem,
+    requestId: 'req-router-err',
+    onFrame: async msg => {
+      if (msg.interactionUpdate?.textDelta) fallbackText += msg.interactionUpdate.textDelta.text;
+    },
+  });
+  await bidiAppend(proxy.port, ca.certPem, 'req-router-err', 0, {
+    runRequest: {
+      conversationId: 'conv-router-err',
+      runId: 'req-router-err',
+      requestedModel: { modelId: 'default' },
+      action: {
+        userMessageAction: {
+          userMessage: { text: 'Explain event loop', messageId: 'm-err', mode: 1 },
+          requestContext: { env: { workspacePaths: ['/tmp/ws'] } },
+        },
+      },
+    },
+  });
+  assert.deepEqual(await fallbackDone, {});
+  assert.equal(fallbackText, 'FALLBACK_OK');
+
+  routerMode = 'hang';
+  const cancelDone = streamRunSse({
+    proxyPort: proxy.port,
+    caCertPem: ca.certPem,
+    requestId: 'req-router-cancel',
+    onFrame: async () => {},
+  });
+  await bidiAppend(proxy.port, ca.certPem, 'req-router-cancel', 0, {
+    runRequest: {
+      conversationId: 'conv-router-cancel',
+      runId: 'req-router-cancel',
+      requestedModel: { modelId: 'default' },
+      action: {
+        userMessageAction: {
+          userMessage: { text: 'Cancel during route', messageId: 'm-cancel', mode: 1 },
+          requestContext: { env: { workspacePaths: ['/tmp/ws'] } },
+        },
+      },
+    },
+  });
+  await routerStarted;
+  await bidiAppend(proxy.port, ca.certPem, 'req-router-cancel', 1, {
+    conversationAction: { cancelAction: { reason: 'user_aborted_route' } },
+  });
+  const cancelEnd = await cancelDone;
+  assert.equal(cancelEnd.error?.code, 'canceled');
+  assert.deepEqual(seenModels, ['cursor/auto', 'group/auto', 'cursor/auto']);
 });

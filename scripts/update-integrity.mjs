@@ -8,6 +8,7 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'ut
 
 const tracked = [
   'agent.js',
+  'plugin.js',
   'bridge.js',
   'engine.js',
   'install.js',
@@ -23,6 +24,23 @@ for (const entry of fs.readdirSync(path.join(root, 'lib')).sort()) {
   if (entry.endsWith('.js')) {
     tracked.push(`lib/${entry}`);
   }
+}
+
+const uiDir = path.join(root, 'ui');
+if (fs.existsSync(uiDir)) {
+  const collectUiFiles = (dirPath, prefix) => {
+    for (const entry of fs
+      .readdirSync(dirPath, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name))) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        collectUiFiles(path.join(dirPath, entry.name), rel);
+      } else if (entry.isFile()) {
+        tracked.push(rel);
+      }
+    }
+  };
+  collectUiFiles(uiDir, 'ui');
 }
 
 const files = {};

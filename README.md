@@ -25,3 +25,24 @@ bash setup.command uninstall
 # 运行全部自动化测试
 npm test
 ```
+
+## Magpie 插件集成与分角色模型配置
+
+本仓库遵循 `yetone/magpie` 的双模块插件规范：
+
+- `agent.js` 仅包含纯 `moejs` 沙箱元数据（`id: "cursor-bridge"`、`effort: true`、`connect()`），使插件直接出现在 Magpie **Agents** 列表中并支持一键开关、主模型与推理强度选择。
+- `plugin.js`（`package.json` `main`）由 Magpie Bun Plugin Host 自动加载，负责拉起/升级后台桥接，并在回环地址（默认 `http://127.0.0.1:19381`）提供实时模型目录与诊断页。
+- Magpie UI 扩展（`ui/panel.html`、`ui/page.html`）：在 Agents 页面下方嵌入配置面板，并在侧栏和 Agent 行菜单提供“配置角色模型”入口。
+
+支持按职责单独指定模型（可选附加 `[reasoning=low|medium|high|xhigh]`，留空则沿用主模型）：
+
+- `autoRouterModel`：Cursor 原生 `Auto` 模式的路由控制模型，负责从 Magpie 全量模型目录中选择最合适的执行模型；留空默认使用 `cursor/auto`（目录无 `cursor/auto` 时回退主模型）。仅对原生 `Auto` 生效，不会劫持或干扰用户手动选择的 `cursor/auto`，且每次会话轮次严格单跳防回环。
+- `subagentModel` / `subagentTypeModels`：子代理默认模型及按类型（如 `explore`、`shell`、`generalPurpose`、`browser-use`）细分映射。
+- `bugbotModel`：Bugbot 自动审阅、`StreamBugBot`、`StreamBugBotLinter` 与 `StreamDiffReview`。
+- `securitybotModel`：SecurityBot 安全审查与漏洞扫描子代理。
+- `titleModel`：会话与分支标题命名（`NameAgent`、`GetChatTitle`、`WriteGitBranchName`）。
+- `summarizeModel`：长对话摘要与压缩（`SummarizeAction`、`CreateTranscriptOverview`、`GetConversationSummary`）。
+- `memoryModel`：记忆提取与整理（`PotentiallyGenerateMemory` 及记忆子代理）。
+- `commitModel`：Git 提交信息生成（`WriteGitCommitMessage`）。
+
+在 Magpie 界面保存写入 `~/.config/magpie/plugins.json` 的选项，在本地实时服务页保存写入 `~/.config/magpie-cursor-bridge/roles.json`；后台每 1 秒自动对比两者修改时间并取最新一份热生效，无需重启 Cursor 或插件宿主。
