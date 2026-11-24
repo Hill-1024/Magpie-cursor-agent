@@ -162,3 +162,97 @@ test('decodeMessage rejects oversized or truncated length-delimited varints', ()
   const overflowLen = Buffer.from([0x0a, 0x80, 0x80, 0x80, 0x80, 0x10]);
   assert.throws(() => decodeCursor('BidiRequestId', overflowLen), /Truncated length-delimited/);
 });
+
+test('progressive-disclosure RunRequest, McpMetaToolOptions, SkillOptions, and GetMcpToolsToolCall round-trip', () => {
+  const runBytes = encodeCursor('AgentRunRequest', {
+    conversationId: 'conv-pd',
+    excludeWorkspaceContext: true,
+    systemPromptSpec: { append: 'Keep concise' },
+    skillOptions: {
+      skillDescriptors: [
+        {
+          name: 'demo',
+          description: 'Demo skill',
+          folderPath: '/tmp/.agents/skills/demo',
+          enabled: true,
+          readmeFilePath: '/tmp/.agents/skills/demo/SKILL.md',
+        },
+      ],
+    },
+    action: {
+      userMessageAction: {
+        userMessage: {
+          text: '',
+          textBlobId: Buffer.from('blob-text-1'),
+          messageId: 'm-1',
+          mode: 1,
+          selectedContext: {
+            cursorRules: [{ rule: { fullPath: '/tmp/ws/.cursor/rules/manual.mdc', content: 'Manual body' } }],
+          },
+        },
+        requestContext: {
+          mcpMetaToolOptions: {
+            enabled: true,
+            mcpDescriptors: [
+              {
+                serverName: 'Playwright',
+                serverIdentifier: 'playwright',
+                tools: [{ toolName: 'browser_navigate', description: 'Navigate' }],
+              },
+            ],
+          },
+        },
+      },
+    },
+  });
+  const decodedRun = decodeCursor('AgentRunRequest', runBytes);
+  assert.equal(decodedRun.excludeWorkspaceContext, true);
+  assert.equal(decodedRun.systemPromptSpec.append, 'Keep concise');
+  assert.equal(decodedRun.skillOptions.skillDescriptors[0].readmeFilePath, '/tmp/.agents/skills/demo/SKILL.md');
+  assert.equal(
+    Buffer.from(decodedRun.action.userMessageAction.userMessage.textBlobId).toString('utf8'),
+    'blob-text-1'
+  );
+  assert.equal(
+    decodedRun.action.userMessageAction.userMessage.selectedContext.cursorRules[0].rule.content,
+    'Manual body'
+  );
+  assert.equal(
+    decodedRun.action.userMessageAction.requestContext.mcpMetaToolOptions.mcpDescriptors[0].serverIdentifier,
+    'playwright'
+  );
+
+  const cardBytes = encodeCursor('AgentServerMessage', {
+    interactionUpdate: {
+      toolCallCompleted: {
+        callId: 'tc-1',
+        modelCallId: 'mc-1',
+        toolCall: {
+          toolCallId: 'tc-1',
+          getMcpToolsToolCall: {
+            args: { server: 'playwright', toolCallId: 'tc-1' },
+            result: { success: { content: '[{"toolName":"browser_navigate"}]' } },
+          },
+        },
+      },
+    },
+  });
+  const decodedCard = decodeCursor('AgentServerMessage', cardBytes);
+  assert.equal(decodedCard.interactionUpdate.toolCallCompleted.toolCall.getMcpToolsToolCall.args.server, 'playwright');
+  assert.equal(
+    decodedCard.interactionUpdate.toolCallCompleted.toolCall.getMcpToolsToolCall.result.success.content,
+    '[{"toolName":"browser_navigate"}]'
+  );
+
+  const resumeBytes = encodeCursor('AgentRunRequest', {
+    action: {
+      resumeAction: {
+        requestContext: {
+          gitRepos: [{ path: '/tmp/repo', branchName: 'main' }],
+        },
+      },
+    },
+  });
+  const decodedResume = decodeCursor('AgentRunRequest', resumeBytes);
+  assert.equal(decodedResume.action.resumeAction.requestContext.gitRepos[0].path, '/tmp/repo');
+});

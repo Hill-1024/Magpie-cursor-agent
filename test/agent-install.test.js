@@ -461,3 +461,35 @@ test('ensureBridgeStarted routes version upgrade through setup instead of spawni
   const res = await ensureBridgeStarted({ rootDir, sourceDir: fakeSource, noAutostart: false });
   assert.equal(res.action, 'setup');
 });
+
+test('ensureBridgeStarted triggers setup when integrity.json changes within the same version', async testCtx => {
+  const rootDir = makeTemp(testCtx);
+  const fakeSource = makeTemp(testCtx);
+  fs.writeFileSync(path.join(fakeSource, 'package.json'), JSON.stringify({ version: '9.9.9' }));
+  fs.writeFileSync(
+    path.join(fakeSource, 'integrity.json'),
+    JSON.stringify({ version: '9.9.9', files: { 'lib/cursor-engine.js': 'new-hash' } })
+  );
+
+  const staged = path.join(makeTemp(testCtx), 'staged');
+  fs.mkdirSync(staged, { recursive: true });
+  fs.writeFileSync(path.join(staged, 'bridge.js'), '// bridge\n');
+  fs.writeFileSync(path.join(staged, 'engine.js'), '// engine\n');
+  fs.writeFileSync(
+    path.join(staged, 'integrity.json'),
+    JSON.stringify({ version: '9.9.9', files: { 'lib/cursor-engine.js': 'old-hash' } })
+  );
+
+  fs.writeFileSync(
+    path.join(rootDir, 'installation.json'),
+    JSON.stringify({ version: '9.9.9', release: staged })
+  );
+  fs.writeFileSync(path.join(rootDir, 'status.json'), JSON.stringify({ version: '9.9.9', state: 'connected' }));
+
+  const lockDir = path.join(rootDir, 'supervisor.lock');
+  const owner = claimLock(lockDir);
+  testCtx.after(() => releaseLock(lockDir, owner));
+
+  const res = await ensureBridgeStarted({ rootDir, sourceDir: fakeSource, noAutostart: false });
+  assert.equal(res.action, 'setup');
+});

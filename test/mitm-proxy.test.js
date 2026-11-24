@@ -270,6 +270,8 @@ test('MITM proxy blocks analytics, telemetry, Statsig, and local-token auth loca
   const statsigJson = JSON.parse(statsigDecoded.config);
   assert.equal(statsigJson.user.userID, 'local_bridge');
   assert.equal(statsigJson.sdkParams.disableDiagnosticsLogging, true);
+  assert.equal(statsigJson.feature_gates.meta_mcp_tool.value, true);
+  assert.equal(statsigJson.feature_gates.mcp_meta_tool_slim_descriptors.value, false);
 
   for (const blockedPath of [
     '/aiserver.v1.AnalyticsService/TrackEvents',

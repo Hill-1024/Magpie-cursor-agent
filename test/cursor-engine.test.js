@@ -1261,3 +1261,375 @@ test('hydrateMessages strips skill bodies, filters rule types, deduplicates MCP 
   const toolNames = capturedPayloads[0].tools.map(item => item.function.name);
   assert.equal(toolNames.filter(name => name === 'mcp_demo_lookup').length, 1);
 });
+
+test('progressive MCP disclosure uses GetMcpTools + CallMcpTool and trims plugin/nested rules, cloud dupes, and long history', async testCtx => {
+  const gatewayPayloads = [];
+  const executedMcpArgs = [];
+  const observedCards = [];
+  let round = 0;
+
+  const { ca, mockGateway, proxy } = await startRunSseProxy({
+    models: [
+      { id: 'group/auto', name: 'Auto', context: 200000 },
+      { id: 'magpie/compact-32k', name: 'Compact 32K', context: 32000 },
+    ],
+    onGatewayRequest: (req, res) => {
+      const chunks = [];
+      req.on('data', chunk => chunks.push(chunk));
+      req.on('end', () => {
+        const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        gatewayPayloads.push(payload);
+        round += 1;
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        if (round === 1) {
+          res.write(
+            `data: ${JSON.stringify({
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: 0,
+                        id: 'call_get_mcp',
+                        function: {
+                          name: 'GetMcpTools',
+                          arguments: JSON.stringify({ server: 'playwright', toolName: 'browser_navigate' }),
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            })}\n\n`
+          );
+          res.write('data: {"choices":[{"finish_reason":"tool_calls"}]}\n\n');
+        } else if (round === 2) {
+          res.write(
+            `data: ${JSON.stringify({
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: 0,
+                        id: 'call_exec_mcp',
+                        function: {
+                          name: 'CallMcpTool',
+                          arguments: JSON.stringify({
+                            server: 'playwright',
+                            toolName: 'browser_navigate',
+                            arguments: { url: 'https://example.com' },
+                          }),
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            })}\n\n`
+          );
+          res.write('data: {"choices":[{"finish_reason":"tool_calls"}]}\n\n');
+        } else {
+          res.write('data: {"choices":[{"delta":{"content":"PROGRESSIVE_MCP_OK"}}]}\n\n');
+          res.write('data: {"choices":[{"finish_reason":"stop"}]}\n\n');
+        }
+        res.end('data: [DONE]\n\n');
+      });
+    },
+  });
+  testCtx.after(() => proxy.close());
+  testCtx.after(() => mockGateway.close());
+
+  const largeMcpTools = Array.from({ length: 24 }, (_, idx) => ({
+    name: idx === 0 ? 'playwright-browser_navigate' : `rea-tool_${idx}`,
+    providerIdentifier: idx === 0 ? 'Playwright' : 'REA',
+    toolName: idx === 0 ? 'browser_navigate' : `tool_${idx}`,
+    description: `Detailed tool description ${idx} ` + 'schema detail '.repeat(25),
+    inputSchemaJson: JSON.stringify({
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Target URL to open' },
+        mode: { type: 'string', enum: ['fast', 'full'] },
+      },
+      required: idx === 0 ? ['url'] : [],
+    }),
+  }));
+
+  const rootAgents = '# Root AGENTS\nAlways run tests before finishing.';
+  const oldTurnUserBlobId = Buffer.from('old-u-1');
+  const oldTurnStepBlobId = Buffer.from('old-s-1');
+  const oldTurnBlobId = Buffer.from('old-t-1');
+  const currentTextBlobId = Buffer.from('cur-u-text');
+
+  const oldTurnData = encodeCursor('ConversationTurnStructure', {
+    agentConversationTurn: {
+      userMessage: oldTurnUserBlobId,
+      steps: [oldTurnStepBlobId],
+      requestId: 'old-req',
+    },
+  });
+  const hugeOldUserData = encodeCursor('UserMessage', {
+    text: 'OLD_DROPPABLE_HISTORY ' + 'x'.repeat(60_000),
+    messageId: 'old-m-1',
+    mode: 1,
+  });
+  const hugeOldStepData = encodeCursor('ConversationStep', {
+    assistantMessage: { text: 'OLD_ASSISTANT ' + 'y'.repeat(60_000) },
+  });
+
+  const requestId = 'req-progressive-full';
+  let seqno = 0;
+  const runDone = streamRunSse({
+    proxyPort: proxy.port,
+    caCertPem: ca.certPem,
+    requestId,
+    onFrame: async msg => {
+      if (msg.interactionUpdate?.toolCallCompleted?.toolCall) {
+        observedCards.push(msg.interactionUpdate.toolCallCompleted.toolCall);
+      } else if (msg.execServerMessage?.mcpArgs) {
+        const m = msg.execServerMessage.mcpArgs;
+        executedMcpArgs.push({
+          name: m.name,
+          serverIdentifier: m.serverIdentifier,
+          providerIdentifier: m.providerIdentifier,
+          toolName: m.toolName,
+        });
+        await bidiAppend(proxy.port, ca.certPem, requestId, seqno++, {
+          execClientMessage: {
+            id: msg.execServerMessage.id,
+            execId: msg.execServerMessage.execId,
+            mcpResult: {
+              success: {
+                content: [{ text: { text: 'NAVIGATED_EXAMPLE_COM' } }],
+                isError: false,
+              },
+            },
+          },
+        });
+      }
+    },
+  });
+
+  await bidiAppend(proxy.port, ca.certPem, requestId, seqno++, {
+    runRequest: {
+      conversationId: 'conv-progressive',
+      runId: requestId,
+      requestedModel: { modelId: 'magpie/compact-32k' },
+      preFetchedBlobs: [
+        { id: oldTurnBlobId, value: oldTurnData },
+        { id: oldTurnUserBlobId, value: hugeOldUserData },
+        { id: oldTurnStepBlobId, value: hugeOldStepData },
+        { id: currentTextBlobId, value: Buffer.from('Navigate to example.com', 'utf8') },
+      ],
+      conversationState: { turns: [oldTurnBlobId] },
+      mcpTools: { mcpTools: largeMcpTools },
+      skillOptions: {
+        skillDescriptors: [
+          {
+            name: 'option-skill',
+            description: 'From SkillOptions descriptor',
+            folderPath: '/Users/demo/.agents/skills/opt',
+            enabled: true,
+            readmeFilePath: '/Users/demo/.agents/skills/opt/SKILL.md',
+          },
+        ],
+      },
+      action: {
+        userMessageAction: {
+          userMessage: {
+            text: '',
+            textBlobId: currentTextBlobId,
+            messageId: 'm-cur',
+            mode: 1,
+            selectedContext: {
+              cursorRules: [{ rule: { fullPath: '/tmp/ws/.cursor/rules/manual.mdc', content: 'ATTACHED_MANUAL_RULE' } }],
+              files: [{ path: '/tmp/ws/big.txt', content: 'BIG_FILE_CONTENT '.repeat(2500) }],
+            },
+          },
+          requestContext: {
+            env: { workspacePaths: ['/tmp/ws'] },
+            cloudRule: rootAgents,
+            rules: [
+              { fullPath: '/tmp/ws/AGENTS.md', content: rootAgents, type: { global: {} } },
+              {
+                fullPath: '/tmp/ws/packages/sub/AGENTS.md',
+                content: 'SUBDIR_RULE_BODY_SHOULD_NOT_BE_INLINED '.repeat(400),
+                type: { global: {} },
+              },
+              {
+                fullPath: '/Users/demo/.claude/plugins/marketplaces/huge/help.json',
+                content: 'PLUGIN_NOISE_SHOULD_NOT_BE_INLINED '.repeat(500),
+              },
+              {
+                fullPath: '/Users/demo/.codex/skills/hidden/SKILL.md',
+                content: '---\ndisable-model-invocation: true\ndescription: Hidden skill\n---\nHIDDEN_SKILL_BODY',
+              },
+            ],
+          },
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(await runDone, {});
+  assert.equal(gatewayPayloads.length, 3);
+
+  // Round 1 must expose only 9 builtins + GetMcpTools + CallMcpTool (11 tools total, no 24 raw MCP schemas)
+  const round1Tools = gatewayPayloads[0].tools.map(t => t.function.name);
+  assert.equal(round1Tools.length, 11);
+  assert.ok(round1Tools.includes('GetMcpTools'));
+  assert.ok(round1Tools.includes('CallMcpTool'));
+  assert.equal(round1Tools.includes('playwright-browser_navigate'), false);
+
+  // System prompt stays progressive & deduplicated
+  const sys = gatewayPayloads[0].messages[0].content;
+  assert.ok(sys.includes('<dynamic_tools>'));
+  assert.ok(sys.includes('server="playwright"'));
+  assert.ok(sys.includes('/tmp/ws/packages/sub/AGENTS.md'));
+  assert.ok(sys.includes('/Users/demo/.agents/skills/opt/SKILL.md: From SkillOptions descriptor'));
+  assert.equal(sys.includes('SUBDIR_RULE_BODY_SHOULD_NOT_BE_INLINED'), false);
+  assert.equal(sys.includes('PLUGIN_NOISE_SHOULD_NOT_BE_INLINED'), false);
+  assert.equal(sys.includes('HIDDEN_SKILL_BODY'), false);
+  assert.equal(sys.includes('/Users/demo/.codex/skills/hidden/SKILL.md'), false);
+  // Cloud rule duplicating root AGENTS.md is deduplicated
+  assert.equal(sys.split('Always run tests before finishing.').length - 1, 1);
+
+  // Old huge turn dropped by budget, current hydrated textBlobId + attached manual rule + bounded file kept
+  const serializedR1 = JSON.stringify(gatewayPayloads[0].messages);
+  assert.equal(serializedR1.includes('OLD_DROPPABLE_HISTORY'), false);
+  assert.ok(serializedR1.includes('Navigate to example.com'));
+  assert.ok(serializedR1.includes('ATTACHED_MANUAL_RULE'));
+  assert.ok(serializedR1.length < 40_000, `expected compacted payload under 40k chars, got ${serializedR1.length}`);
+
+  // Round 2 receives schema discovered by GetMcpTools
+  const round2ToolsMsg = gatewayPayloads[1].messages.find(m => m.role === 'tool');
+  assert.ok(round2ToolsMsg.content.includes('Target URL to open'));
+
+  // CallMcpTool dispatches real ExecServerMessage.mcpArgs with serverIdentifier & providerIdentifier
+  assert.deepEqual(executedMcpArgs, [
+    {
+      name: 'playwright-browser_navigate',
+      serverIdentifier: 'playwright',
+      providerIdentifier: 'Playwright',
+      toolName: 'browser_navigate',
+    },
+  ]);
+  assert.ok(observedCards[0].getMcpToolsToolCall);
+  assert.equal(observedCards[1].mcpToolCall.args.serverIdentifier, 'playwright');
+});
+
+test('ResumeAction context and gitRepos nested-rule filtering stay compact and CallMcpTool resolves server-prefixed names', async testCtx => {
+  const gatewayPayloads = [];
+  const executedMcpArgs = [];
+  let round = 0;
+
+  const { ca, mockGateway, proxy } = await startRunSseProxy({
+    onGatewayRequest: (req, res) => {
+      const chunks = [];
+      req.on('data', chunk => chunks.push(chunk));
+      req.on('end', () => {
+        gatewayPayloads.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        round += 1;
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        if (round === 1) {
+          res.write(
+            `data: ${JSON.stringify({
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: 0,
+                        id: 'call_prefixed_mcp',
+                        function: {
+                          name: 'CallMcpTool',
+                          arguments: JSON.stringify({
+                            server: 'playwright',
+                            toolName: 'playwright-browser_click',
+                            arguments: { selector: '#go' },
+                          }),
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            })}\n\n`
+          );
+          res.write('data: {"choices":[{"finish_reason":"tool_calls"}]}\n\n');
+        } else {
+          res.write('data: {"choices":[{"delta":{"content":"RESUME_OK"}}]}\n\n');
+          res.write('data: {"choices":[{"finish_reason":"stop"}]}\n\n');
+        }
+        res.end('data: [DONE]\n\n');
+      });
+    },
+  });
+  testCtx.after(() => proxy.close());
+  testCtx.after(() => mockGateway.close());
+
+  const requestId = 'req-resume-action';
+  let seqno = 0;
+  const runDone = streamRunSse({
+    proxyPort: proxy.port,
+    caCertPem: ca.certPem,
+    requestId,
+    onFrame: async msg => {
+      if (msg.execServerMessage?.mcpArgs) {
+        executedMcpArgs.push(msg.execServerMessage.mcpArgs);
+        await bidiAppend(proxy.port, ca.certPem, requestId, seqno++, {
+          execClientMessage: {
+            id: msg.execServerMessage.id,
+            execId: msg.execServerMessage.execId,
+            mcpResult: { success: { content: [{ text: { text: 'CLICKED' } }], isError: false } },
+          },
+        });
+      }
+    },
+  });
+
+  await bidiAppend(proxy.port, ca.certPem, requestId, seqno++, {
+    runRequest: {
+      conversationId: 'conv-resume',
+      runId: requestId,
+      action: {
+        resumeAction: {
+          requestContext: {
+            gitRepos: [{ path: '/tmp/repo-root', branchName: 'main' }],
+            rules: [
+              {
+                fullPath: '/tmp/repo-root/services/api/AGENTS.md',
+                content: 'NESTED_GIT_REPO_RULE_BODY '.repeat(300),
+                type: { global: {} },
+              },
+            ],
+            mcpMetaToolOptions: {
+              enabled: true,
+              mcpDescriptors: [
+                {
+                  serverName: 'Playwright',
+                  serverIdentifier: 'playwright',
+                  tools: [
+                    {
+                      toolName: 'browser_click',
+                      description: 'Click element',
+                      inputSchemaJson: JSON.stringify({ type: 'object', properties: { selector: { type: 'string' } } }),
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(await runDone, {});
+  const sys = gatewayPayloads[0].messages[0].content;
+  assert.equal(sys.includes('NESTED_GIT_REPO_RULE_BODY'), false);
+  assert.ok(sys.includes('/tmp/repo-root/services/api/AGENTS.md'));
+  assert.equal(executedMcpArgs[0].name, 'playwright-browser_click');
+  assert.equal(executedMcpArgs[0].toolName, 'browser_click');
+  assert.equal(executedMcpArgs[0].serverIdentifier, 'playwright');
+});
