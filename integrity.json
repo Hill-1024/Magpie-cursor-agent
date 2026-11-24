@@ -1,7 +1,7 @@
 {
   "version": "0.4.8",
   "files": {
-    "agent.js": "7740e3426335b55d4ea37f2bad5f3e3b71dd85d6de3469618c6b8dff30e82008",
+    "agent.js": "079ecf020b77948e0105e9f276743d10f8bac1d9a604efaf3b32f6c49ddf8cb3",
     "plugin.js": "bf8c8933ee4a5cbe3ceaf19d4965725b70dbfb5c97d12fe1ac74c25943ecd2e1",
     "bridge.js": "057202fcde6dd80489890f5b8c27b6cc809edb26ea32afb6eac5bc0924fbc379",
     "engine.js": "149b05046218d3dcd692d87b24259dc4e7716cc90a7d488526fee2d2c375f608",
@@ -9,7 +9,7 @@
     "setup.command": "8fda15af04bca7b44dd0b2848d5c9b0add6298e7d0e8c668b4a1bfc5a5e95eb5",
     "setup.ps1": "68f30df91dfb60f26dab279ee7acf639c4d15c102a2900578ab5e76c986de8f7",
     "setup.cmd": "f3a2e3e6624e58703608b0c984390ab824d22cf33e3d81cd6dd55af70cdca95a",
-    "package.json": "e8eb16a8c676070292e81e3333f01b1ad938d9e502d9f174a71232c0713e55d7",
+    "package.json": "bdad35a7354c171690b465c7cadd3ed499f73b1242b72afd7658bc8e706531f5",
     "icon.svg": "0d371423e44a67fae184014d57596f7329e9991cda765a67a039b9a577878621",
     "icon.png": "8a5e92e244476de53d39003c5580abc5cc555c169f9dc2f10785423a57d17170",
     "lib/config.js": "c0b247e2e2e3fcfe28da42bd7402f522563692e10bc1ad2c907a37c5df989554",
