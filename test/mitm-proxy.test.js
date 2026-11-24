@@ -191,11 +191,11 @@ test('MITM proxy handles Cursor HTTP/1.1 & HTTP/2 locally while tunneling non-Cu
     'Auto'
   );
 
-  // 3. GetUsableModels uses synthetic local credentials and never exposes Magpie's real gateway key
+  // 3. GetUsableModels omits BYOK apiKeyCredentials so Cursor local loop activates and never exposes Magpie's gateway key
   const usableResp = await h1PostOverProxy(proxy.port, ca.certPem, '/agent.v1.AgentService/GetUsableModels', Buffer.alloc(0));
   const decodedUsable = decodeCursor('UsableModelsAddition', usableResp.body);
-  assert.equal(decodedUsable.models[0].apiKeyCredentials.apiKey, 'cursor-magpie-local');
-  assert.notEqual(decodedUsable.models[0].apiKeyCredentials.apiKey, 'secret-gateway-key');
+  assert.equal(decodedUsable.models[0].modelId, 'deepseek/deepseek-chat');
+  assert.equal(decodedUsable.models[0].apiKeyCredentials, undefined);
   assert.ok(decodedUsable.models.some(entry => entry.modelId === 'default' && entry.displayModelId === 'auto'));
 
   // 4. WriteGitCommitMessage routes through local Magpie gateway
@@ -270,6 +270,8 @@ test('MITM proxy blocks analytics, telemetry, Statsig, and local-token auth loca
   const statsigJson = JSON.parse(statsigDecoded.config);
   assert.equal(statsigJson.user.userID, 'local_bridge');
   assert.equal(statsigJson.sdkParams.disableDiagnosticsLogging, true);
+  assert.equal(statsigJson.feature_gates.cursor_agent_host.value, true);
+  assert.equal(statsigJson.feature_gates.agent_host_local_loop.value, true);
   assert.equal(statsigJson.feature_gates.meta_mcp_tool.value, true);
   assert.equal(statsigJson.feature_gates.mcp_meta_tool_slim_descriptors.value, false);
 

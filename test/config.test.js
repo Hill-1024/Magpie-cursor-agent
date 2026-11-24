@@ -10,8 +10,10 @@ import {
   loadMergedRoles,
   normalizeRoleConfig,
   parseModelRef,
+  readKnownModels,
   resolveAutoRouterConfig,
   resolveRoleModel,
+  syncKnownModels,
   validateConfig,
 } from '../lib/config.js';
 
@@ -85,6 +87,34 @@ test('fetchGatewayModels refreshes live catalogue from local gateway', async tes
   assert.equal(refreshed.models[0].fast, true);
   assert.deepEqual(refreshed.models[1].efforts, ['medium', 'max']);
   assert.equal(refreshed.models[1].fast, false);
+});
+
+test('fetchGatewayModels falls back active model and syncKnownModels retains hidden models', async testCtx => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'magpie-known-models-'));
+  testCtx.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ data: [{ id: 'provider/model-b', display_name: 'Model B', context_window: 128000 }] }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  testCtx.after(() => server.close());
+
+  const initialSeed = [
+    { id: 'provider/model-a', name: 'Model A', context: 200000, efforts: ['high'], fast: false },
+    { id: 'provider/model-b', name: 'Model B', context: 128000, efforts: [], fast: false },
+  ];
+  const refreshed = await fetchGatewayModels({
+    ...baseConfig,
+    gateway: `http://127.0.0.1:${server.address().port}/v1`,
+    models: initialSeed,
+  });
+  assert.equal(refreshed.model, 'provider/model-b');
+
+  const { knownModels, hiddenModels } = syncKnownModels(tempRoot, refreshed.models, initialSeed);
+  assert.deepEqual(knownModels.map(m => m.id), ['provider/model-b', 'provider/model-a']);
+  assert.deepEqual(hiddenModels.map(m => m.id), ['provider/model-a']);
+  assert.equal(readKnownModels(tempRoot).length, 2);
 });
 
 test('normalizeRoleConfig, parseModelRef, and resolveRoleModel handle aliases, subtypes, and reasoning', () => {

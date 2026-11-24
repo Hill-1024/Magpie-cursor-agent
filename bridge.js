@@ -6,11 +6,18 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { atomicWrite, applyProxy, restoreProxy, clearStaleProxy } from './lib/settings.js';
-import { loadMergedRoles, validateConfig, fetchGatewayModels } from './lib/config.js';
+import {
+  fetchGatewayModels,
+  loadMergedRoles,
+  readKnownModels,
+  syncKnownModels,
+  validateConfig,
+} from './lib/config.js';
 import { claimLock, isLockHeld, releaseLock } from './lib/lock.js';
 import { readMagpieWired, nextMagpieGate } from './lib/magpie.js';
 import { shouldRevive } from './lib/watch.js';
 import { isPortAvailable, listenWithFallback } from './lib/relay.js';
+import { clearPrivateInferenceConfig } from './lib/private-inference.js';
 
 const rawRelayPort = process.env.CURSOR_BRIDGE_RELAY_PORT;
 const parsedRelayPort = rawRelayPort !== undefined && rawRelayPort !== '' ? Number(rawRelayPort) : 52407;
@@ -75,6 +82,9 @@ async function runSupervise() {
   let relayHandle = null;
   let lastEffective = null;
   let cursorRestarted = false;
+  let lastExposedSignature = '';
+  let catalogUpdatedAt = Date.now();
+  clearPrivateInferenceConfig({ rootDir: root });
 
   const pauseLimit = 30;
 
@@ -207,6 +217,7 @@ async function runSupervise() {
     engineChild = null;
     readyInfo = null;
     try {
+      clearPrivateInferenceConfig({ rootDir: root });
       const journalFile = stateFile('settings-journal.json');
       if (fs.existsSync(journalFile)) {
         const removed = restoreProxy(journalFile);
@@ -320,6 +331,7 @@ async function runSupervise() {
 
   const panicRestore = () => {
     try {
+      clearPrivateInferenceConfig({ rootDir: root });
       const journalFile = stateFile('settings-journal.json');
       if (fs.existsSync(journalFile)) restoreProxy(journalFile);
       else clearStaleProxy(settingsPath);
@@ -357,7 +369,7 @@ async function runSupervise() {
         const raw = fs.existsSync(stateFile('connection.json'))
           ? fs.readFileSync(stateFile('connection.json'), 'utf8')
           : '{}';
-        const config = validateConfig(JSON.parse(raw));
+        const config = validateConfig(JSON.parse(raw), { fallbackMissingModel: true });
 
         if (!config) {
           await stopEngine();
@@ -387,15 +399,34 @@ async function runSupervise() {
           const childDead =
             !engineChild || engineChild.exitCode !== null || engineChild.signalCode !== null;
           if (changed || rolesChanged || Date.now() >= nextRefreshAt || childDead) {
+            const knownBefore = readKnownModels(root);
             let refreshed;
             try {
-              refreshed = await fetchGatewayModels(config);
+              refreshed = await fetchGatewayModels(config, { knownModels: knownBefore });
             } catch {
               refreshed = !changed && lastEffective ? lastEffective : config;
             }
-            const effective = { ...refreshed, roles: mergedRoles };
+            const { hiddenModels } = syncKnownModels(
+              root,
+              refreshed.models,
+              lastEffective ? [...lastEffective.models, ...(lastEffective.hiddenModels || [])] : config.models
+            );
+            const exposedSignature = JSON.stringify({
+              models: refreshed.models,
+              roles: mergedRoles,
+            });
+            if (exposedSignature !== lastExposedSignature) {
+              lastExposedSignature = exposedSignature;
+              catalogUpdatedAt = Math.max(Date.now(), catalogUpdatedAt + 1);
+            }
+            const effective = {
+              ...refreshed,
+              hiddenModels,
+              roles: mergedRoles,
+              catalogUpdatedAt,
+            };
             lastEffective = effective;
-            nextRefreshAt = Date.now() + 4000;
+            nextRefreshAt = Date.now() + 3000;
             if (childDead) {
               await stopEngine();
               await startEngine(effective);
@@ -410,7 +441,7 @@ async function runSupervise() {
             publishStatus(
               'connected',
               {
-                model: config.model,
+                model: effective.model,
                 models: lastModelCount,
                 roles: mergedRoles,
                 proxy: publicProxyUrl(),
@@ -424,7 +455,7 @@ async function runSupervise() {
               await publishProxy(engineProxyUrl);
             }
             publishStatus('connected', {
-              model: config.model,
+              model: lastEffective?.model || config.model,
               models: lastModelCount,
               roles: mergedRoles,
               proxy: publicProxyUrl(),
@@ -527,6 +558,7 @@ if (command === 'status') {
       : '未安装或尚未运行'
   );
 } else if (command === 'restore') {
+  clearPrivateInferenceConfig({ rootDir: root });
   console.log(JSON.stringify({ preservedExternalChanges: restoreProxy(stateFile('settings-journal.json')) }));
 } else if (command === 'supervise') {
   await runSupervise();

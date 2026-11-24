@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { atomicWrite, restoreProxy } from './lib/settings.js';
 import { claimLock, releaseLock } from './lib/lock.js';
+import { clearPrivateInferenceConfig } from './lib/private-inference.js';
 import {
   activate,
   initializeCertificate,
@@ -108,6 +109,7 @@ async function main() {
     if (command === 'uninstall') {
       if (magpieBinary) runCommand(magpieBinary, ['cursor-bridge', 'default'], { optional: true });
       await stopJob(targetPaths, domain);
+      clearPrivateInferenceConfig({ rootDir: targetPaths.root });
       restoreProxy(path.join(targetPaths.root, 'settings-journal.json'));
       if (magpieBinary && fs.existsSync(path.join(targetPaths.target, 'package.json'))) {
         runCommand(magpieBinary, ['plugin', 'rm', targetPaths.target], { optional: true });
@@ -122,6 +124,7 @@ async function main() {
 
     verifyPackage(sourceDir);
     const engineScript = path.join(sourceDir, 'engine.js');
+    clearPrivateInferenceConfig({ rootDir: targetPaths.root });
     initializeCertificate(engineScript, targetPaths);
     const releaseDir = stage(sourceDir, targetPaths, manifest.version, process.execPath);
 

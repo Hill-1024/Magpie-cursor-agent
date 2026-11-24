@@ -33,7 +33,10 @@ function readValidatedConnection(configPath) {
     includeMagpiePlugins: allowPluginsJson,
     pluginsJsonPath: process.env.CURSOR_BRIDGE_PLUGINS_JSON || '',
   });
-  const validated = validateConfig({ enabled: true, ...parsed, roles: mergedRoles });
+  const validated = validateConfig(
+    { enabled: true, ...parsed, roles: mergedRoles },
+    { fallbackMissingModel: true }
+  );
   if (!validated) {
     throw new Error('Missing gateway, key, or selected model in connection config');
   }
