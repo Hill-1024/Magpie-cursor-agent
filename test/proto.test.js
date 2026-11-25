@@ -256,3 +256,55 @@ test('progressive-disclosure RunRequest, McpMetaToolOptions, SkillOptions, and G
   const decodedResume = decodeCursor('AgentRunRequest', resumeBytes);
   assert.equal(decodedResume.action.resumeAction.requestContext.gitRepos[0].path, '/tmp/repo');
 });
+
+test('AvailableModel.supportsSmartModeClassifier and ClassifyAgentAutoReview messages round-trip', () => {
+  const availBytes = encodeCursor('AvailableModelsAddition', {
+    models: [{ name: 'magpie/main', defaultOn: true, supportsSmartModeClassifier: true }],
+    modelNames: ['magpie/main'],
+  });
+  const availDecoded = decodeCursor('AvailableModelsAddition', availBytes);
+  assert.equal(availDecoded.models[0].supportsSmartModeClassifier, true);
+
+  const reqBytes = encodeCursor('ClassifyAgentAutoReviewRequest', {
+    args: {
+      toolCallId: 'tc-review-1',
+      parentConversationId: 'conv-1',
+      target: {
+        action: 'shell',
+        arguments: {
+          fields: {
+            command: { stringValue: 'git status' },
+          },
+        },
+      },
+      conversationContext: [{ role: 'user', content: 'check git status' }],
+    },
+    attemptIndex: 0,
+    mode: 'enforce',
+    workspacePaths: ['/tmp/ws'],
+    callerRecordsClassifierCall: true,
+  });
+  const reqDecoded = decodeCursor('ClassifyAgentAutoReviewRequest', reqBytes);
+  assert.equal(reqDecoded.args.toolCallId, 'tc-review-1');
+  assert.equal(reqDecoded.args.target.action, 'shell');
+  assert.equal(reqDecoded.args.target.arguments.fields.command.stringValue, 'git status');
+  assert.deepEqual(reqDecoded.workspacePaths, ['/tmp/ws']);
+
+  const respBytes = encodeCursor('ClassifyAgentAutoReviewResponse', {
+    result: {
+      success: {
+        decision: 2,
+        blockReason: 'Deletes workspace files',
+        proposedAllowRule: 'rm -rf dist',
+        irreversible: true,
+        highStakes: true,
+      },
+    },
+    serverDurationMs: 42,
+  });
+  const respDecoded = decodeCursor('ClassifyAgentAutoReviewResponse', respBytes);
+  assert.equal(respDecoded.result.success.decision, 2);
+  assert.equal(respDecoded.result.success.blockReason, 'Deletes workspace files');
+  assert.equal(respDecoded.result.success.irreversible, true);
+  assert.equal(respDecoded.serverDurationMs, 42);
+});

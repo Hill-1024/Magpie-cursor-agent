@@ -22,6 +22,7 @@ test('ui/shared.js normalizes aliases, preserves unrelated plugin options, and c
     subagent: 'magpie/legacy-sub',
     bugbotModel: 'magpie/bug-pro[reasoning=high]',
     security: 'magpie/sec-opus',
+    permissionReviewModel: 'magpie/review-guard[reasoning=low]',
     namingModel: 'magpie/title-mini',
     summary: 'magpie/sum-mid',
     memoriesModel: 'magpie/mem-fast',
@@ -33,6 +34,7 @@ test('ui/shared.js normalizes aliases, preserves unrelated plugin options, and c
   assert.equal(formState.roles.subagent, 'magpie/legacy-sub');
   assert.equal(formState.roles.bugbot, 'magpie/bug-pro[reasoning=high]');
   assert.equal(formState.roles.securitybot, 'magpie/sec-opus');
+  assert.equal(formState.roles.autoReview, 'magpie/review-guard[reasoning=low]');
   assert.equal(formState.roles.title, 'magpie/title-mini');
   assert.equal(formState.roles.summarize, 'magpie/sum-mid');
   assert.equal(formState.roles.memory, 'magpie/mem-fast');
@@ -49,6 +51,7 @@ test('ui/shared.js normalizes aliases, preserves unrelated plugin options, and c
         subagent: '',
         bugbot: 'magpie/bug-pro[reasoning=high]',
         securitybot: 'magpie/sec-opus',
+        autoReview: 'magpie/review-guard[reasoning=low]',
         title: 'magpie/title-mini',
         summarize: 'magpie/sum-mid',
         memory: 'magpie/mem-fast',
@@ -66,6 +69,7 @@ test('ui/shared.js normalizes aliases, preserves unrelated plugin options, and c
   assert.equal(builtOptions.autoRouterModel, 'cursor/auto');
   assert.equal(builtOptions.subagentModel, '');
   assert.equal(builtOptions.bugbotModel, 'magpie/bug-pro[reasoning=high]');
+  assert.equal(builtOptions.autoReviewModel, 'magpie/review-guard[reasoning=low]');
   assert.deepEqual(JSON.parse(JSON.stringify(builtOptions.subagentTypeModels)), {
     explore: 'magpie/explore-fast',
   });
@@ -73,6 +77,7 @@ test('ui/shared.js normalizes aliases, preserves unrelated plugin options, and c
   const rolesPayload = ui.buildServiceRolesPayload(formState);
   assert.equal(rolesPayload.autoRouter, 'magpie/router-mini[reasoning=low]');
   assert.equal(rolesPayload.securitybot, 'magpie/sec-opus');
+  assert.equal(rolesPayload.autoReview, 'magpie/review-guard[reasoning=low]');
   assert.deepEqual(JSON.parse(JSON.stringify(rolesPayload.subagentTypes)), {
     explore: 'magpie/explore-fast',
   });

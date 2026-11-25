@@ -181,6 +181,7 @@ test('MITM proxy handles Cursor HTTP/1.1 & HTTP/2 locally while tunneling non-Cu
   assert.equal(availResp.status, 200);
   const decodedAvail = decodeCursor('AvailableModelsAddition', availResp.body);
   assert.deepEqual(decodedAvail.modelNames, ['deepseek/deepseek-chat', 'group/auto']);
+  assert.equal(decodedAvail.models[0].supportsSmartModeClassifier, true);
   assert.notEqual(decodedAvail.displayConfiguration.routedModelViewConfig.hideRoutedModelView, true);
   assert.equal(
     decodedAvail.displayConfiguration.routedModelViewConfig.routedModelViewToNamedViewToggle.titleMarkdown,

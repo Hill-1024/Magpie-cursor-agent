@@ -404,3 +404,28 @@ test('fetchGatewayModels, parseModelRef, and resolveEffectiveServiceTier handle 
     'ultrafast'
   );
 });
+
+test('normalizeRoleConfig and resolveRoleModel support autoReview aliases and fallbacks', () => {
+  const fromAlias = normalizeRoleConfig({
+    permissionReviewModel: 'magpie/reviewer[reasoning=medium,service_tier=priority]',
+  });
+  assert.equal(fromAlias.autoReview, 'magpie/reviewer[reasoning=medium,service_tier=priority]');
+
+  const fromSmartAlias = normalizeRoleConfig({
+    smartModeClassifierModel: 'magpie/classifier-fast',
+  });
+  assert.equal(fromSmartAlias.autoReview, 'magpie/classifier-fast');
+
+  assert.deepEqual(
+    resolveRoleModel(
+      { model: 'magpie/main', roles: { autoReview: 'magpie/reviewer[reasoning=low]' } },
+      'autoReview'
+    ),
+    { modelId: 'magpie/reviewer', effort: 'low', role: 'autoReview' }
+  );
+  assert.deepEqual(resolveRoleModel({ model: 'magpie/main', roles: {} }, 'autoReview'), {
+    modelId: 'magpie/main',
+    effort: null,
+    role: 'default',
+  });
+});

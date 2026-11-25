@@ -309,6 +309,7 @@ test('service.js config service hides gateway secrets, validates loopback header
       subagentModel: 'magpie/fast[reasoning=low]',
       bugbotModel: 'magpie/main',
       securitybotModel: 'magpie/main[reasoning=high]',
+      autoReviewModel: 'magpie/fast[reasoning=low]',
       titleModel: 'magpie/fast',
       summarizeModel: 'magpie/fast',
       memoryModel: 'magpie/fast',
@@ -321,9 +322,11 @@ test('service.js config service hides gateway secrets, validates loopback header
   assert.equal(savedJson.roles.autoRouter, 'cursor/auto');
   assert.equal(savedJson.roles.subagent, 'magpie/fast[reasoning=low]');
   assert.equal(savedJson.roles.securitybot, 'magpie/main[reasoning=high]');
+  assert.equal(savedJson.roles.autoReview, 'magpie/fast[reasoning=low]');
 
   const diskRoles = JSON.parse(fs.readFileSync(path.join(rootDir, 'roles.json'), 'utf8'));
   assert.equal(diskRoles.autoRouter, 'cursor/auto');
+  assert.equal(diskRoles.autoReview, 'magpie/fast[reasoning=low]');
   assert.equal(diskRoles.title, 'magpie/fast');
   assert.deepEqual(diskRoles.subagentTypes, { explore: 'magpie/fast' });
 

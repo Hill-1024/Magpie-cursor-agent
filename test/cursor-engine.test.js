@@ -1752,3 +1752,128 @@ test('multi-tier service_tiers expose enum selector and role overrides support u
     { model: 'yuren/gpt-6.2-sol', effort: null, serviceTier: 'ultrafast', stream: true },
   ]);
 });
+
+test('ClassifyAgentAutoReview routes to autoReview role model and parses allow, block, and error fallback', async testCtx => {
+  const gatewayRequests = [];
+  let nextDecisionJson = JSON.stringify({
+    decision: 'allow',
+    action_description: 'Check repository status',
+  });
+  const { ca, proxy, mockGateway } = await startRunSseProxy({
+    model: 'magpie/main',
+    models: [
+      { id: 'magpie/main', name: 'Main', context: 200000 },
+      {
+        id: 'magpie/reviewer',
+        name: 'Reviewer',
+        context: 128000,
+        efforts: ['low', 'medium'],
+        serviceTiers: [{ id: 'priority', name: 'Fast' }],
+      },
+    ],
+    roles: {
+      autoReview: 'magpie/reviewer[reasoning=low,service_tier=priority]',
+    },
+    onGatewayRequest: (req, res) => {
+      const chunks = [];
+      req.on('data', chunk => chunks.push(chunk));
+      req.on('end', () => {
+        const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        gatewayRequests.push({
+          model: payload.model,
+          effort: payload.reasoning_effort || null,
+          serviceTier: payload.service_tier || null,
+          userPrompt: payload.messages.find(m => m.role === 'user')?.content || '',
+        });
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: nextDecisionJson } }] })}\n\n`);
+        res.write('data: {"choices":[{"finish_reason":"stop"}]}\n\n');
+        res.end('data: [DONE]\n\n');
+      });
+    },
+  });
+  testCtx.after(() => proxy.close());
+  testCtx.after(() => mockGateway.close());
+
+  const postAutoReview = async reqObj => {
+    const tlsSock = await openConnectTls(proxy.port, ca.certPem);
+    try {
+      const body = encodeCursor('ClassifyAgentAutoReviewRequest', reqObj);
+      const raw = [
+        'POST /aiserver.v1.AiService/ClassifyAgentAutoReview HTTP/1.1',
+        'Host: api2.cursor.sh',
+        'Content-Type: application/proto',
+        `Content-Length: ${body.length}`,
+        'Connection: close',
+        '',
+        '',
+      ].join('\r\n');
+      tlsSock.write(Buffer.concat([Buffer.from(raw, 'latin1'), body]));
+      const chunks = [];
+      await new Promise((resolve, reject) => {
+        tlsSock.on('data', d => chunks.push(d));
+        tlsSock.on('end', resolve);
+        tlsSock.on('error', reject);
+      });
+      const buf = Buffer.concat(chunks);
+      const sep = buf.indexOf(Buffer.from('\r\n\r\n'));
+      return decodeCursor('ClassifyAgentAutoReviewResponse', buf.subarray(sep + 4));
+    } finally {
+      tlsSock.destroy();
+    }
+  };
+
+  const allowResp = await postAutoReview({
+    args: {
+      toolCallId: 'tc-allow',
+      target: {
+        action: 'shell',
+        arguments: { fields: { command: { stringValue: 'git status' } } },
+      },
+      conversationContext: [{ role: 'user', content: 'inspect git status' }],
+    },
+    attemptIndex: 0,
+    mode: 'enforce',
+    workspacePaths: ['/repo'],
+  });
+  assert.equal(allowResp.result.success.decision, 1);
+  assert.equal(allowResp.result.success.actionDescription, 'Check repository status');
+  assert.equal(gatewayRequests[0].model, 'magpie/reviewer');
+  assert.equal(gatewayRequests[0].effort, 'low');
+  assert.equal(gatewayRequests[0].serviceTier, 'priority');
+  assert.match(gatewayRequests[0].userPrompt, /git status/);
+
+  nextDecisionJson = JSON.stringify({
+    decision: 'block',
+    block_reason: 'Destructive recursive deletion outside temp directory',
+    block_reason_category: 'destructive_shell',
+    irreversible: true,
+    high_stakes: true,
+    proposed_allow_rule: 'rm -rf ./dist',
+  });
+  const blockResp = await postAutoReview({
+    args: {
+      toolCallId: 'tc-block',
+      target: {
+        action: 'shell',
+        arguments: { fields: { command: { stringValue: 'rm -rf /' } } },
+      },
+    },
+    mode: 'enforce',
+    workspacePaths: ['/repo'],
+  });
+  assert.equal(blockResp.result.success.decision, 2);
+  assert.equal(blockResp.result.success.blockReason, 'Destructive recursive deletion outside temp directory');
+  assert.equal(blockResp.result.success.blockReasonCategory, 'destructive_shell');
+  assert.equal(blockResp.result.success.irreversible, true);
+  assert.equal(blockResp.result.success.highStakes, true);
+  assert.equal(blockResp.result.success.proposedAllowRule, 'rm -rf ./dist');
+
+  nextDecisionJson = 'not json at all';
+  const badResp = await postAutoReview({
+    args: { toolCallId: 'tc-bad', target: { action: 'shell' } },
+    mode: 'enforce',
+  });
+  assert.equal(badResp.result.success, undefined);
+  assert.match(badResp.result.error.error, /non-JSON/i);
+});

@@ -373,6 +373,8 @@ test('InferenceService RunInference handles HTTP/2 BiDi streaming, hidden old-se
   assert.deepEqual(endStream, {});
   const ready = serverMsgs.find(m => m.runReady)?.runReady;
   assert.equal(ready.resolvedModel.modelId, 'anthropic/old-hidden');
+  assert.equal(ready.promptModelMetadata.smartModeClassifierMode, true);
+  assert.equal(ready.promptModelMetadata.smartModeClassifierShadowMode, false);
   assert.equal(ready.summarization.model.modelId, 'openai/gpt-mini');
   assert.equal(seenRequests[0].model, 'anthropic/old-hidden');
   assert.equal(seenRequests[0].reasoning_effort, 'high');
