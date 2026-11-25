@@ -33,9 +33,9 @@
 
 | 维度 | 说明 |
 | :--- | :--- |
-| **原生协议兼容** | 完整适配 Cursor `agent_host_local_loop`、`RunSSE` / `BidiAppend` / `RunInference` 与 KV Blob 回放，支持本地工具链（`Read` / `Write` / `StrReplace` / `Delete` / `Shell` / `Grep` / `Glob` / `LS` / `ReadLints`）与渐进式 MCP 披露（`GetMcpTools` / `CallMcpTool`）。 |
+| **原生 Agent 接入** | 直接接入 Cursor 原生 Agent（保留其本地上下文、工具执行、MCP 与沙箱机制），仅在请求层进行协议转换与模型路由转发。 |
 | **目录与能力透传** | 实时拉取 Magpie 模型目录并热更新至 Cursor，按模型真实能力暴露上下文窗口、`efforts` 推理强度以及 `Fast` / `Ultrafast` 等多档 `serviceTiers` 加速等级。 |
-| **分角色模型路由** | 在 Magpie 侧栏 **「Cursor 角色模型」** 页统一配置主对话之外的 8 类专用职责（含 `explore` / `shell` / `generalPurpose` / `browser-use` 子代理细分），保存后约 1 秒热生效。 |
+| **分角色模型路由** | 在 Magpie 侧栏 **「Cursor 角色模型」** 页统一配置主对话之外的 9 类专用职责（含 Auto-review 权限审查与 `explore` / `shell` / `generalPurpose` / `browser-use` 子代理细分），保存后约 1 秒热生效。 |
 | **零依赖洁净实现** | 纯 ESM JavaScript 编写，无 `node_modules`、无预编译可执行文件；内置 JSONC 编辑器、ASN.1 DER X.509 证书签发器与 Protobuf Wire 编解码器。 |
 | **可信透明与隔离** | 全量核心文件由 `integrity.json` 做 SHA-256 校验；对话与上下文 Blob 仅驻留内存不落盘；仅本地 TLS 桥接 `*.cursor.sh`，其余域名原生 TCP 透传。 |
 
@@ -54,7 +54,7 @@ flowchart LR
   subgraph Bridge["本地守护与协议引擎"]
     Service["lib/service.js\n配置服务 :19381"]
     Supervisor["bridge.js\n中继 :52407 · 看门狗 · 目录热更新"]
-    Engine["engine.js + mitm-proxy.js\nCursor 协议翻译 / 会话循环"]
+    Engine["engine.js + mitm-proxy.js\n请求层协议转换与路由"]
   end
 
   subgraph Target["外部流量分流"]
@@ -71,7 +71,7 @@ flowchart LR
 
 1. **托管与唤醒**：Magpie 宿主通过 `plugin.js` 自动启动本地配置服务（默认 `http://127.0.0.1:19381`）并按需拉起或升级后台守护进程；`agent.js` 以纯 `moejs` 沙箱元数据在 **Agents** 列表中暴露 **Cursor · Magpie Bridge**。
 2. **精确代理接管**：`bridge.js` 监听固定本机回环中继端口（默认 `52407`，冲突时自动回退并在释放后恢复），通过带日志的 JSONC 编辑器写入 Cursor `settings.json` 的 `http.proxy`，停用或卸载时精确还原原配置。
-3. **协议翻译与热重载**：`engine.js` 仅对 `*.cursor.sh` 签发本地 CA 叶子证书并完成 HTTP/2 + Connect-Proto 解析，将模型请求、工具调用与附属角色请求转发至 Magpie 回环网关；目录或角色变更无需重启 Cursor 即可热生效。
+3. **请求层桥接与热重载**：`engine.js` 仅对 `*.cursor.sh` 签发本地 CA 叶子证书并拦截请求，在请求边界完成协议转换后路由至 Magpie 回环网关，不改动或重造 Cursor 原生 Agent 运行时；目录或角色变更无需重启 Cursor 即可热生效。
 
 ---
 
@@ -117,6 +117,7 @@ setup.cmd
 | `subagentTypeModels` | 按子代理类型细分：`explore` · `shell` · `generalPurpose` · `browser-use` | 留空沿用 `subagentModel` / 主模型 |
 | `bugbotModel` | Bugbot 自动审阅、`StreamBugBot`、`StreamBugBotLinter`、`StreamDiffReview` | 留空沿用主模型 |
 | `securitybotModel` | SecurityBot 安全审查与漏洞扫描子代理 | 留空沿用主模型 |
+| `autoReviewModel` | Cursor Auto-review 权限模式下的命令与工具安全审查（`ClassifyAgentAutoReview`） | 留空沿用主模型 |
 | `titleModel` | 会话与分支命名（`NameAgent`、`GetChatTitle`、`WriteGitBranchName`） | 留空沿用主模型 |
 | `summarizeModel` | 长对话摘要与压缩（`SummarizeAction`、`CreateTranscriptOverview`、`GetConversationSummary`） | 留空沿用主模型 |
 | `memoryModel` | 记忆提取与整理（`PotentiallyGenerateMemory` 及记忆子代理） | 留空沿用主模型 |
@@ -173,8 +174,8 @@ Magpie-cursor-agent/
 ├── integrity.json        # 核心运行文件 SHA-256 完整性清单
 ├── lib/
 │   ├── cursor-engine.js  # Cursor RPC 路由、Auto 路由、角色调度与模型目录
-│   ├── inference-loop.js # Agent 本地执行循环、流式翻译与进度检查点
-│   ├── cursor-tools.js   # 内置工具集与渐进式 MCP 工具调度
+│   ├── inference-loop.js # RunInference 请求流转换与响应回传
+│   ├── cursor-tools.js   # Cursor 工具调用编解码与 MCP 声明透传
 │   ├── mitm-proxy.js     # *.cursor.sh TLS 终止与非 Cursor 域名 TCP 透传
 │   ├── service.js        # 回环配置服务(:19381)与角色持久化
 │   ├── config.js         # 回环校验、角色归一化、多档 service_tier 解析
@@ -187,7 +188,7 @@ Magpie-cursor-agent/
 │   └── shared.js / style.css / icon.svg
 ├── scripts/
 │   └── update-integrity.mjs
-└── test/                 # 自动化单元测试（72 项用例）
+└── test/                 # 自动化单元测试（75 项用例）
 ```
 
 ---
