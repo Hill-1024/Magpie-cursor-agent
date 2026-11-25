@@ -482,3 +482,128 @@ test('RunInferenceSSE + BidiAppend handles racing appends, summarization role, a
   assert.ok(frames.some(m => m.invocationResponse?.response?.textPart?.text === 'SUMMARIZED'));
   assert.ok(abortedCount >= 1);
 });
+
+test('InferenceService resolves multi-tier service_tier and role overrides including explicit off', async testCtx => {
+  const seenRequests = [];
+  const mockGateway = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      seenRequests.push({
+        model: parsed.model,
+        effort: parsed.reasoning_effort ?? null,
+        serviceTier: parsed.service_tier ?? null,
+      });
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: {"choices":[{"delta":{"content":"INF_TIER_OK"}}]}\n\n');
+      res.write('data: {"choices":[{"finish_reason":"stop"}]}\n\n');
+      res.end('data: [DONE]\n\n');
+    });
+  });
+  await new Promise(resolve => mockGateway.listen(0, '127.0.0.1', resolve));
+  testCtx.after(() => mockGateway.close());
+
+  const ca = generateLocalCa();
+  const engine = new CursorBridgeEngine({
+    enabled: true,
+    gateway: `http://127.0.0.1:${mockGateway.address().port}/v1`,
+    key: 'secret-gateway-key',
+    model: 'yuren/gpt-6.2-sol',
+    models: [
+      {
+        id: 'yuren/gpt-6.2-sol',
+        name: 'GPT-6.2 Sol',
+        context: 922000,
+        efforts: ['low', 'high'],
+        fast: true,
+        serviceTiers: [
+          { id: 'priority', name: 'Fast' },
+          { id: 'ultrafast', name: 'Ultrafast' },
+        ],
+      },
+      {
+        id: 'cursor/grok-4.7@500k',
+        name: 'Grok 500K',
+        context: 500000,
+        efforts: ['high'],
+        fast: true,
+        serviceTiers: [{ id: 'priority', name: 'Fast' }],
+      },
+    ],
+    roles: {
+      summarize: 'cursor/grok-4.7@500k[service_tier=off]',
+      subagent: 'yuren/gpt-6.2-sol[reasoning=low,service_tier=ultrafast]',
+    },
+  });
+  const proxy = await startMitmProxy({
+    engine,
+    caCertPem: ca.certPem,
+    caKeyPem: ca.keyPem,
+    allowAuthPassthrough: false,
+  });
+  testCtx.after(() => proxy.close());
+
+  const requestId = 'sse-tier-1';
+  await inferenceBidiAppend(proxy.port, ca.certPem, requestId, 0, {
+    runRequest: {
+      conversationId: 'conv-tier-1',
+      requestedModel: {
+        modelId: 'yuren/gpt-6.2-sol',
+        maxMode: false,
+        parameters: [{ id: 'service_tier', value: 'ultrafast' }],
+      },
+    },
+  });
+
+  const frames = [];
+  const sseDone = streamRunInferenceSse({
+    proxyPort: proxy.port,
+    caCertPem: ca.certPem,
+    requestId,
+    onFrame: msg => frames.push(msg),
+  });
+
+  await inferenceBidiAppend(proxy.port, ca.certPem, requestId, 1, {
+    invokeModel: {
+      invocationId: 'inv-main-ultra',
+      purpose: 0,
+      request: {
+        requestedModel: {
+          modelId: 'yuren/gpt-6.2-sol',
+          parameters: [{ id: 'service_tier', value: 'ultrafast' }],
+        },
+        messages: [{ role: 1, text: 'main call' }],
+      },
+    },
+  });
+  await inferenceBidiAppend(proxy.port, ca.certPem, requestId, 2, {
+    invokeModel: {
+      invocationId: 'inv-sum-off',
+      purpose: 1,
+      request: {
+        messages: [{ role: 1, text: 'summarize call' }],
+      },
+    },
+  });
+  await inferenceBidiAppend(proxy.port, ca.certPem, requestId, 3, {
+    invokeModel: {
+      invocationId: 'inv-sub-ultra',
+      purpose: 0,
+      request: {
+        subagentType: 'generalPurpose',
+        messages: [{ role: 1, text: 'subagent call' }],
+      },
+    },
+  });
+  await inferenceBidiAppend(proxy.port, ca.certPem, requestId, 4, {
+    finishRun: { aborted: false, turnCompleted: true },
+  });
+
+  assert.deepEqual(await sseDone, {});
+  assert.deepEqual(seenRequests, [
+    { model: 'yuren/gpt-6.2-sol', effort: null, serviceTier: 'ultrafast' },
+    { model: 'cursor/grok-4.7@500k', effort: null, serviceTier: null },
+    { model: 'yuren/gpt-6.2-sol', effort: 'low', serviceTier: 'ultrafast' },
+  ]);
+});

@@ -12,6 +12,7 @@ import {
   parseModelRef,
   readKnownModels,
   resolveAutoRouterConfig,
+  resolveEffectiveServiceTier,
   resolveRoleModel,
   syncKnownModels,
   validateConfig,
@@ -325,4 +326,81 @@ test('loadMergedRoles resolves equal mtimeMs deterministically and fetchGatewayM
   });
   assert.equal(refreshed.models.length, 1);
   assert.equal(refreshed.models[0].context, 200000);
+});
+
+test('fetchGatewayModels, parseModelRef, and resolveEffectiveServiceTier handle multi-tier fast options', async testCtx => {
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        data: [
+          {
+            id: 'yuren/gpt-6.2-sol',
+            display_name: 'GPT-6.2 Sol · yuren',
+            context_window: 922000,
+            reasoning_levels: ['low', 'high', 'ultra'],
+            service_tiers: [
+              { id: 'priority', name: 'Fast', description: '1.5x speed, increased usage' },
+              { id: 'ultrafast', name: 'Ultrafast', description: '' },
+            ],
+          },
+          {
+            id: 'anthropic/claude-fast',
+            context_window: 200000,
+            service_tiers: [{ id: 'fast', name: 'Fast' }],
+          },
+        ],
+      })
+    );
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  testCtx.after(() => server.close());
+
+  const refreshed = await fetchGatewayModels({
+    ...baseConfig,
+    gateway: `http://127.0.0.1:${server.address().port}/v1`,
+  });
+  assert.equal(refreshed.models[0].fast, true);
+  assert.deepEqual(refreshed.models[0].serviceTiers, [
+    { id: 'priority', name: 'Fast', description: '1.5x speed, increased usage' },
+    { id: 'ultrafast', name: 'Ultrafast' },
+  ]);
+  assert.equal(refreshed.models[1].fast, true);
+  assert.deepEqual(refreshed.models[1].serviceTiers, [{ id: 'fast', name: 'Fast' }]);
+
+  assert.deepEqual(parseModelRef('yuren/gpt-6.2-sol[reasoning=xhigh,service_tier=ultrafast]'), {
+    modelId: 'yuren/gpt-6.2-sol',
+    effort: 'xhigh',
+    serviceTier: 'ultrafast',
+  });
+  assert.deepEqual(parseModelRef('cursor/grok-4.7@500k[fast=false]'), {
+    modelId: 'cursor/grok-4.7@500k',
+    effort: null,
+    serviceTier: 'off',
+  });
+  assert.deepEqual(
+    resolveRoleModel(
+      {
+        model: 'yuren/gpt-6.2-sol',
+        roles: { subagent: 'yuren/gpt-6.2-sol[reasoning=high,service_tier=ultrafast]' },
+      },
+      'subagent'
+    ),
+    {
+      modelId: 'yuren/gpt-6.2-sol',
+      effort: 'high',
+      role: 'subagent',
+      serviceTier: 'ultrafast',
+    }
+  );
+  assert.equal(resolveEffectiveServiceTier('yuren/gpt-6.2-sol', refreshed, 'ultrafast'), 'ultrafast');
+  assert.equal(
+    resolveEffectiveServiceTier('yuren/gpt-6.2-sol', refreshed, 'off', { inheritTier: 'priority' }),
+    null
+  );
+  assert.equal(resolveEffectiveServiceTier('anthropic/claude-fast', refreshed, 'priority'), 'fast');
+  assert.equal(
+    resolveEffectiveServiceTier('custom/unlisted', refreshed, 'ultrafast', { allowUnknownExplicit: true }),
+    'ultrafast'
+  );
 });

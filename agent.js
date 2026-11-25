@@ -19,13 +19,36 @@ export function connect({ gateway, models }) {
     gateway: gateway.v1,
     key: gateway.key,
     models: Array.isArray(models)
-      ? models.map(entry => ({
-          id: entry.id,
-          name: entry.name || entry.id,
-          context: entry.context || null,
-          efforts: Array.isArray(entry.efforts) ? entry.efforts : [],
-          fast: Boolean(entry.fast),
-        }))
+      ? models.map(entry => {
+          const rawTiers = Array.isArray(entry.serviceTiers)
+            ? entry.serviceTiers
+            : Array.isArray(entry.service_tiers)
+              ? entry.service_tiers
+              : null;
+          const serviceTiers = rawTiers
+            ? rawTiers
+                .map(tier => {
+                  const rawId = typeof tier === 'string' ? tier : tier?.id;
+                  const id = typeof rawId === 'string' ? rawId.trim().toLowerCase() : '';
+                  if (!id || id === 'default' || id === 'standard' || id === 'usual' || id === 'off') return null;
+                  const name = typeof tier === 'object' && tier && typeof tier.name === 'string' && tier.name.trim()
+                    ? tier.name.trim()
+                    : id === 'ultrafast' ? 'Ultrafast' : id === 'priority' || id === 'fast' ? 'Fast' : id;
+                  return { id, name };
+                })
+                .filter(Boolean)
+            : entry.fast
+              ? [{ id: 'priority', name: 'Fast' }]
+              : [];
+          return {
+            id: entry.id,
+            name: entry.name || entry.id,
+            context: entry.context || null,
+            efforts: Array.isArray(entry.efforts) ? entry.efforts : [],
+            fast: Boolean(entry.fast) || serviceTiers.some(t => t.id === 'priority' || t.id === 'ultrafast' || t.id === 'fast'),
+            serviceTiers,
+          };
+        })
       : [],
   };
 }

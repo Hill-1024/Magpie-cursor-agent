@@ -1633,3 +1633,122 @@ test('ResumeAction context and gitRepos nested-rule filtering stay compact and C
   assert.equal(executedMcpArgs[0].toolName, 'browser_click');
   assert.equal(executedMcpArgs[0].serverIdentifier, 'playwright');
 });
+
+test('multi-tier service_tiers expose enum selector and role overrides support ultrafast and explicit off', async testCtx => {
+  const gatewayRequests = [];
+  const { ca, mockGateway, proxy, engine } = await startRunSseProxy({
+    models: [
+      {
+        id: 'yuren/gpt-6.2-sol',
+        name: 'GPT-6.2 Sol',
+        context: 922000,
+        efforts: ['low', 'high', 'ultra'],
+        fast: true,
+        serviceTiers: [
+          { id: 'priority', name: 'Fast' },
+          { id: 'ultrafast', name: 'Ultrafast' },
+        ],
+      },
+      {
+        id: 'cursor/grok-4.7@500k',
+        name: 'Grok 500K',
+        context: 500000,
+        efforts: ['low', 'high'],
+        fast: true,
+        serviceTiers: [{ id: 'priority', name: 'Fast' }],
+      },
+    ],
+    roles: {
+      autoRouter: 'yuren/gpt-6.2-sol[reasoning=low,service_tier=priority]',
+      subagent: 'yuren/gpt-6.2-sol[reasoning=high,service_tier=ultrafast]',
+      subagentTypes: {
+        explore: 'cursor/grok-4.7@500k[service_tier=off]',
+      },
+      commit: 'yuren/gpt-6.2-sol[service_tier=ultrafast]',
+    },
+    onGatewayRequest: (req, res) => {
+      const chunks = [];
+      req.on('data', chunk => chunks.push(chunk));
+      req.on('end', () => {
+        const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        gatewayRequests.push({
+          model: payload.model,
+          effort: payload.reasoning_effort ?? null,
+          serviceTier: payload.service_tier ?? null,
+          stream: Boolean(payload.stream),
+        });
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('data: {"choices":[{"delta":{"content":"TIER_OK"}}]}\n\n');
+        res.write('data: {"choices":[{"finish_reason":"stop"}]}\n\n');
+        res.end('data: [DONE]\n\n');
+      });
+    },
+  });
+  testCtx.after(() => proxy.close());
+  testCtx.after(() => mockGateway.close());
+
+  const avail = decodeCursor('AvailableModelsAddition', engine.buildAvailableModelsResponse());
+  const sol = avail.models.find(m => m.name === 'yuren/gpt-6.2-sol');
+  const tierParam = sol.parameterDefinitions.find(p => p.id === 'service_tier');
+  assert.ok(tierParam?.parameterType?.enumParameter);
+  assert.deepEqual(
+    tierParam.parameterType.enumParameter.values.map(v => v.value),
+    ['default', 'priority', 'ultrafast']
+  );
+  assert.equal(sol.parameterDefinitions.some(p => p.id === 'fast'), false);
+
+  const grok = avail.models.find(m => m.name === 'cursor/grok-4.7@500k');
+  assert.ok(grok.parameterDefinitions.find(p => p.id === 'fast')?.parameterType?.booleanParameter);
+
+  const run = async (requestId, runFields) => {
+    const done = streamRunSse({
+      proxyPort: proxy.port,
+      caCertPem: ca.certPem,
+      requestId,
+      onFrame: async () => {},
+    });
+    await bidiAppend(proxy.port, ca.certPem, requestId, 0, {
+      runRequest: {
+        conversationId: `conv-${requestId}`,
+        runId: requestId,
+        ...runFields,
+        action: {
+          userMessageAction: {
+            userMessage: { text: 'Test tier routing', messageId: `m-${requestId}`, mode: 1 },
+          },
+        },
+      },
+    });
+    assert.deepEqual(await done, {});
+  };
+
+  await run('req-ultra', {
+    requestedModel: {
+      modelId: 'yuren/gpt-6.2-sol',
+      parameters: [{ id: 'service_tier', value: 'ultrafast' }],
+    },
+  });
+  await run('req-sub-ultra', {
+    requestedModel: { modelId: 'cursor/grok-4.7@500k' },
+    subagentTypeName: 'generalPurpose',
+  });
+  await run('req-explore-off', {
+    requestedModel: {
+      modelId: 'cursor/grok-4.7@500k',
+      parameters: [{ id: 'fast', value: 'true' }],
+    },
+    subagentTypeName: 'explore',
+  });
+
+  const commitResp = await engine.handleCommitMessage(
+    encodeCursor('WriteGitCommitMessageRequest', { diffs: ['+ fast tier support'] })
+  );
+  assert.equal(decodeCursor('WriteGitCommitMessageResponse', commitResp).commitMessage, 'TIER_OK');
+
+  assert.deepEqual(gatewayRequests, [
+    { model: 'yuren/gpt-6.2-sol', effort: null, serviceTier: 'ultrafast', stream: true },
+    { model: 'yuren/gpt-6.2-sol', effort: 'high', serviceTier: 'ultrafast', stream: true },
+    { model: 'cursor/grok-4.7@500k', effort: null, serviceTier: null, stream: true },
+    { model: 'yuren/gpt-6.2-sol', effort: null, serviceTier: 'ultrafast', stream: true },
+  ]);
+});

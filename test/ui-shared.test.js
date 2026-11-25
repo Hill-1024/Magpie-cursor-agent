@@ -90,6 +90,7 @@ test('ui/shared.js readFormStateFromDom prioritizes non-custom select values', (
             if (sel === '.cb-model-select') return { value: 'magpie/new-catalog' };
             if (sel === '.cb-model-input') return { value: 'old/custom' };
             if (sel === '.cb-effort-select') return { value: 'high' };
+            if (sel === '.cb-tier-select') return { value: 'ultrafast' };
             return null;
           },
         },
@@ -97,7 +98,14 @@ test('ui/shared.js readFormStateFromDom prioritizes non-custom select values', (
     },
   };
   const parsed = ui.readFormStateFromDom(rolesGridEl, null);
-  assert.equal(parsed.roles.bugbot, 'magpie/new-catalog[reasoning=high]');
+  assert.equal(parsed.roles.bugbot, 'magpie/new-catalog[reasoning=high,service_tier=ultrafast]');
+
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.parseModelRef('yuren/gpt-6.2-sol[reasoning=xhigh,service_tier=ultrafast]'))), {
+    modelId: 'yuren/gpt-6.2-sol',
+    effort: 'xhigh',
+    serviceTier: 'ultrafast',
+  });
+  assert.equal(ui.formatModelRef('cursor/grok-4.7@500k', '', 'off'), 'cursor/grok-4.7@500k[service_tier=off]');
 });
 
 test('ui/shared.js groups models by provider, formats context, and filters model-supported efforts', () => {
@@ -148,6 +156,29 @@ test('ui/shared.js groups models by provider, formats context, and filters model
   const preserved = ui.getEffortChoices(models, 'cursor/auto-smart', 'high', true);
   assert.equal(preserved.supportsEffort, true);
   assert.equal(preserved.choices[1].unsupported, true);
+
+  const multiTierModels = [
+    ...models,
+    {
+      id: 'yuren/gpt-6.2-sol',
+      name: 'GPT-6.2 Sol · yuren',
+      context: 922000,
+      efforts: ['low', 'high', 'ultra'],
+      fast: true,
+      serviceTiers: [
+        { id: 'priority', name: 'Fast' },
+        { id: 'ultrafast', name: 'Ultrafast' },
+      ],
+    },
+  ];
+  const solTiers = ui.getServiceTierChoices(multiTierModels, 'yuren/gpt-6.2-sol', '', true);
+  assert.equal(solTiers.supportsFast, true);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(solTiers.choices.map(choice => choice.value))),
+    ['', 'off', 'priority', 'ultrafast']
+  );
+  const nonFastTiers = ui.getServiceTierChoices(multiTierModels, 'auto/gpt-5.6-terra', '', true);
+  assert.equal(nonFastTiers.supportsFast, false);
 });
 
 test('all ui/*.js files parse cleanly without syntax errors', () => {

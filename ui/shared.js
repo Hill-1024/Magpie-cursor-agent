@@ -99,6 +99,7 @@
     'browser-use': { zh: '浏览器自动化操作子代理', en: 'Browser automation subagent' },
   };
   const CUSTOM_MODEL = '__custom__';
+  const STANDARD_TIER_IDS = new Set(['default', 'standard', 'usual', 'off', 'none', 'inherit']);
 
   const PROVIDER_COLORS = [
     '#4f46e5',
@@ -124,27 +125,147 @@
     return clean.slice(0, 256);
   }
 
-  function parseModelRef(rawValue) {
-    const clean = sanitizeValue(rawValue);
-    if (!clean) return { modelId: '', effort: '' };
-    const match = /^(.+?)\[([^\]]+)\]$/.exec(clean);
-    if (!match) return { modelId: clean, effort: '' };
-    let effort = '';
-    for (const pair of match[2].split(',')) {
-      const [paramKey, paramVal] = pair.split('=');
-      if ((paramKey === 'effort' || paramKey === 'reasoning') && paramVal) {
-        effort = paramVal.trim();
-      }
+  function normalizeTierParam(rawVal, { isFastFlag = false } = {}) {
+    if (typeof rawVal === 'boolean') {
+      return isFastFlag ? (rawVal ? 'priority' : 'off') : '';
     }
-    return { modelId: match[1].trim(), effort };
+    if (typeof rawVal !== 'string') return '';
+    const clean = rawVal.replace(/[\r\n\0]/g, '').trim().toLowerCase();
+    if (!clean || clean === 'none' || clean === 'default' || clean === 'inherit') return '';
+    if (clean === 'off' || clean === 'false' || clean === '0' || clean === 'standard' || clean === 'usual') {
+      return 'off';
+    }
+    if (clean === 'true' || clean === '1') return 'priority';
+    return clean.slice(0, 48);
   }
 
-  function formatModelRef(modelId, effort) {
+  function parseModelRef(rawValue) {
+    const clean = sanitizeValue(rawValue);
+    if (!clean) return { modelId: '', effort: '', serviceTier: '' };
+    const match = /^(.+?)\[([^\]]+)\]$/.exec(clean);
+    if (!match) return { modelId: clean, effort: '', serviceTier: '' };
+    let effort = '';
+    let explicitTier = '';
+    let fastTier = '';
+    for (const pair of match[2].split(',')) {
+      const [rawKey, rawVal] = pair.split('=');
+      const paramKey = String(rawKey || '').trim().toLowerCase();
+      const paramVal = typeof rawVal === 'string' ? rawVal.trim() : '';
+      if ((paramKey === 'effort' || paramKey === 'reasoning') && paramVal && paramVal !== 'none') {
+        effort = paramVal;
+      } else if (paramKey === 'service_tier' || paramKey === 'tier' || paramKey === 'speed') {
+        const parsedTier = normalizeTierParam(paramVal);
+        if (parsedTier) explicitTier = parsedTier;
+      } else if (paramKey === 'fast') {
+        const parsedFast = normalizeTierParam(paramVal, { isFastFlag: true });
+        if (parsedFast) fastTier = parsedFast;
+      }
+    }
+    return {
+      modelId: match[1].trim(),
+      effort,
+      serviceTier: explicitTier || fastTier,
+    };
+  }
+
+  function formatModelRef(modelId, effort, serviceTier = '') {
     const cleanId = sanitizeValue(modelId);
     if (!cleanId) return '';
+    if (cleanId.includes('[')) return cleanId;
     const cleanEffort = typeof effort === 'string' ? effort.trim() : '';
-    if (!cleanEffort || cleanId.includes('[')) return cleanId;
-    return `${cleanId}[reasoning=${cleanEffort}]`;
+    const cleanTier = normalizeTierParam(serviceTier);
+    const params = [];
+    if (cleanEffort) params.push(`reasoning=${cleanEffort}`);
+    if (cleanTier) params.push(`service_tier=${cleanTier}`);
+    if (params.length === 0) return cleanId;
+    return `${cleanId}[${params.join(',')}]`;
+  }
+
+  function defaultTierLabel(tierId) {
+    const lower = String(tierId || '').toLowerCase();
+    if (lower === 'priority' || lower === 'fast') return 'Fast';
+    if (lower === 'ultrafast') return 'Ultrafast';
+    if (lower === 'flex') return 'Flex';
+    return tierId;
+  }
+
+  function normalizeModelServiceTiers(entry) {
+    if (!entry || typeof entry !== 'object') return [];
+    const rawTiers = Array.isArray(entry.serviceTiers)
+      ? entry.serviceTiers
+      : Array.isArray(entry.service_tiers)
+        ? entry.service_tiers
+        : null;
+    if (rawTiers) {
+      const out = [];
+      const seen = new Set();
+      for (const item of rawTiers) {
+        const rawId = typeof item === 'string' ? item : item?.id;
+        const cleanId = typeof rawId === 'string' ? rawId.trim().toLowerCase() : '';
+        if (!cleanId || STANDARD_TIER_IDS.has(cleanId) || seen.has(cleanId)) continue;
+        seen.add(cleanId);
+        const rawName = typeof item === 'object' && item && typeof item.name === 'string' ? item.name.trim() : '';
+        const rawDesc =
+          typeof item === 'object' && item && typeof item.description === 'string' ? item.description.trim() : '';
+        out.push({
+          id: cleanId,
+          name: rawName || defaultTierLabel(cleanId),
+          description: rawDesc,
+        });
+      }
+      return out;
+    }
+    if (entry.fast) {
+      return [{ id: 'priority', name: 'Fast', description: '' }];
+    }
+    return [];
+  }
+
+  function getServiceTierChoices(models, modelId, currentTier = '', zh = true) {
+    const cleanCurrent = normalizeTierParam(currentTier);
+    const entry = getModelEntry(models, modelId);
+    const isCustomModel = Boolean(modelId) && !entry;
+    const tiers = entry
+      ? normalizeModelServiceTiers(entry)
+      : isCustomModel
+        ? [
+            { id: 'priority', name: 'Fast', description: '' },
+            { id: 'ultrafast', name: 'Ultrafast', description: '' },
+          ]
+        : [];
+    const supportsFast = tiers.length > 0 || Boolean(cleanCurrent);
+    const choices = [
+      { value: '', label: zh ? '默认速度' : 'Default speed', unsupported: false },
+    ];
+    if (tiers.length > 0 || cleanCurrent === 'off') {
+      choices.push({
+        value: 'off',
+        label: zh ? '标准 (关闭)' : 'Standard (Off)',
+        unsupported: false,
+      });
+    }
+    const allowed = new Set(['', 'off']);
+    for (const tier of tiers) {
+      allowed.add(tier.id);
+      choices.push({
+        value: tier.id,
+        label: tier.name || defaultTierLabel(tier.id),
+        description: tier.description || '',
+        unsupported: false,
+      });
+    }
+    if (cleanCurrent && !allowed.has(cleanCurrent)) {
+      choices.push({
+        value: cleanCurrent,
+        label: zh ? `${defaultTierLabel(cleanCurrent)} (目录未列出)` : `${defaultTierLabel(cleanCurrent)} (unlisted)`,
+        unsupported: true,
+      });
+    }
+    return {
+      choices,
+      tiers,
+      supportsFast,
+    };
   }
 
   function splitModelDisplay(entryOrId, zh = true) {
@@ -236,6 +357,19 @@
       choices,
       supportsEffort: !hasKnownCatalogEfforts || allowed.length > 0 || Boolean(cleanCurrent),
     };
+  }
+
+  function syncTierSelectElement(selectEl, models, modelId, currentTier, zh) {
+    const cleanTier = normalizeTierParam(currentTier);
+    const info = getServiceTierChoices(models, modelId, cleanTier, zh);
+    selectEl.replaceChildren();
+    for (const choice of info.choices) {
+      selectEl.appendChild(createOptionElement(choice.value, choice.label));
+    }
+    selectEl.value = cleanTier;
+    selectEl.hidden = !info.supportsFast;
+    selectEl.title = zh ? '可选 Fast / 加速档位覆盖' : 'Optional Fast / service tier override';
+    return info;
   }
 
   function filterAndGroupModels(models, { query = '', provider = '', zh = true } = {}) {
@@ -481,6 +615,21 @@
       effortSelect.value = parsed.effort || '';
       inputsRow.appendChild(effortSelect);
 
+      const tierSelect = document.createElement('select');
+      tierSelect.className = 'cb-tier-select';
+      syncTierSelectElement(tierSelect, models, parsed.modelId, parsed.serviceTier, zh);
+      inputsRow.appendChild(tierSelect);
+
+      const modelSelectEl = inputsRow.querySelector('.cb-model-select');
+      const modelInputEl = inputsRow.querySelector('.cb-model-input');
+      const refreshRowTier = () => {
+        const nextModel =
+          modelSelectEl && modelSelectEl.value !== CUSTOM_MODEL ? modelSelectEl.value : modelInputEl?.value || '';
+        syncTierSelectElement(tierSelect, models, nextModel.trim(), tierSelect.value, zh);
+      };
+      modelSelectEl?.addEventListener('change', refreshRowTier);
+      modelInputEl?.addEventListener('input', refreshRowTier);
+
       card.append(topRow, descEl, inputsRow);
       containerEl.appendChild(card);
     }
@@ -542,13 +691,24 @@
     }
     effortSelect.value = parsed.effort || '';
 
+    const tierSelect = document.createElement('select');
+    tierSelect.className = 'cb-tier-select';
+    syncTierSelectElement(tierSelect, models, parsed.modelId, parsed.serviceTier, zh);
+    const subSelectEl = row.querySelector('.cb-subtype-select');
+    const refreshSubTier = () => {
+      const nextModel = subSelectEl && subSelectEl.value !== CUSTOM_MODEL ? subSelectEl.value : modelInput.value;
+      syncTierSelectElement(tierSelect, models, nextModel.trim(), tierSelect.value, zh);
+    };
+    subSelectEl?.addEventListener('change', refreshSubTier);
+    modelInput.addEventListener('input', refreshSubTier);
+
     const removeBtn = document.createElement('button');
     removeBtn.type = 'button';
     removeBtn.className = 'cb-btn cb-btn-ghost';
     removeBtn.textContent = zh ? '删除' : 'Remove';
     removeBtn.addEventListener('click', () => row.remove());
 
-    row.append(modelInput, effortSelect, removeBtn);
+    row.append(modelInput, effortSelect, tierSelect, removeBtn);
     containerEl.appendChild(row);
   }
 
@@ -566,9 +726,10 @@
       const selectEl = card.querySelector('.cb-model-select');
       const inputEl = card.querySelector('.cb-model-input');
       const effortEl = card.querySelector('.cb-effort-select');
+      const tierEl = card.querySelector('.cb-tier-select');
       if (!roleKey || !inputEl) continue;
       const rawModel = selectEl && selectEl.value !== CUSTOM_MODEL ? selectEl.value : inputEl.value;
-      roles[roleKey] = formatModelRef(rawModel, effortEl?.value || '');
+      roles[roleKey] = formatModelRef(rawModel, effortEl?.value || '', tierEl?.value || '');
     }
     const subagentTypes = {};
     if (subagentListEl) {
@@ -577,9 +738,10 @@
         const selectEl = row.querySelector('.cb-subtype-select');
         const textInput = row.querySelector('.cb-subtype-model');
         const effortEl = row.querySelector('.cb-effort-select');
+        const tierEl = row.querySelector('.cb-tier-select');
         const cleanType = String(typeInput?.value || '').replace(/[\r\n\0]/g, '').trim();
         const rawModel = selectEl && selectEl.value !== CUSTOM_MODEL ? selectEl.value : textInput?.value || '';
-        const formatted = formatModelRef(rawModel, effortEl?.value || '');
+        const formatted = formatModelRef(rawModel, effortEl?.value || '', tierEl?.value || '');
         if (cleanType && formatted) {
           subagentTypes[cleanType] = formatted;
         }
@@ -600,6 +762,8 @@
     providerColorFor,
     formatContextLabel,
     getModelEntry,
+    normalizeModelServiceTiers,
+    getServiceTierChoices,
     getEffortChoices,
     filterAndGroupModels,
     readOptionsToFormState,

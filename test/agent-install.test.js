@@ -246,6 +246,7 @@ test('service.js config service hides gateway secrets, validates loopback header
   assert.equal(safeBefore.models.length, 2);
   assert.deepEqual(safeBefore.models[0].efforts, ['low', 'high', 'ultra']);
   assert.equal(safeBefore.models[0].fast, true);
+  assert.deepEqual(safeBefore.models[0].serviceTiers, [{ id: 'priority', name: 'Fast' }]);
   assert.equal(safeBefore.status?.port, 52407);
   assert.equal(safeBefore.status?.detail, 'Bridge active');
   assert.equal(safeBefore.status?.modelsCount, 2);
