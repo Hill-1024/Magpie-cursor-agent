@@ -1,5 +1,5 @@
 {
-  "version": "0.4.8",
+  "version": "0.4.9",
   "files": {
     "agent.js": "c1d2b0bdf450348e6ca13345c6d7315abd303c1cc1e68fd9fd6dd0131d576970",
     "plugin.js": "bf8c8933ee4a5cbe3ceaf19d4965725b70dbfb5c97d12fe1ac74c25943ecd2e1",
@@ -9,7 +9,7 @@
     "setup.command": "f2d59f6acf786c87aa10b520a124c1b2a29709cb8479f37612381cf271118e39",
     "setup.ps1": "b9d00e50029cf01ec7145f165a4a73ae051c9a660bd9b9d0ac2a1d19eb8d2929",
     "setup.cmd": "f3a2e3e6624e58703608b0c984390ab824d22cf33e3d81cd6dd55af70cdca95a",
-    "package.json": "bdad35a7354c171690b465c7cadd3ed499f73b1242b72afd7658bc8e706531f5",
+    "package.json": "ca8f7f70f874ba565dfd9a076e6bd7894e10670d70cdb913d05e47a630a91f0d",
     "icon.svg": "0d371423e44a67fae184014d57596f7329e9991cda765a67a039b9a577878621",
     "icon.png": "8a5e92e244476de53d39003c5580abc5cc555c169f9dc2f10785423a57d17170",
     "lib/config.js": "b4a5dbe3c6535c035f89acfa051fdb82f7350ec39acaa3062ead94969a535dde",

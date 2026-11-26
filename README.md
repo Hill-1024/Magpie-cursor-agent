@@ -9,7 +9,7 @@
 *Clean-Room Shadow Implementation — 让 Cursor 原生 Agent 生态无缝接入 Magpie 模型目录与多路由能力*
 
 <p>
-  <img src="https://img.shields.io/badge/version-v0.4.8-18181b?style=flat-square" alt="Version v0.4.8" />
+  <img src="https://img.shields.io/badge/version-v0.4.9-18181b?style=flat-square" alt="Version v0.4.9" />
   <img src="https://img.shields.io/badge/dependencies-0_runtime_deps-10b981?style=flat-square" alt="Zero Dependencies" />
   <img src="https://img.shields.io/badge/runtime-Node.js_%7C_Magpie_Bun-0ea5e9?style=flat-square" alt="Runtime" />
   <img src="https://img.shields.io/badge/platform-macOS_%7C_Windows-6366f1?style=flat-square" alt="Platforms" />
