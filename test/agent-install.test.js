@@ -8,7 +8,23 @@ import vm from 'node:vm';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { agent, connect } from '../agent.js';
-import { activate, label, paths, plistText, stage, verifyPackage } from '../lib/install.js';
+import {
+  activate,
+  copyPayload,
+  findMagpieBinary,
+  isRegisteredInMagpie,
+  label,
+  paths,
+  plistText,
+  stage,
+  verifyPackage,
+} from '../lib/install.js';
+import {
+  compareSemver,
+  findMagpieBuns,
+  selectPreferredRuntime,
+  stageRuntimeBinary,
+} from '../lib/runtime.js';
 import { claimLock, releaseLock } from '../lib/lock.js';
 import {
   createConfigService,
@@ -85,6 +101,14 @@ test('stage creates isolated immutable releases without node_modules or opaque b
   });
   assert.equal(run.status, 0);
   assert.equal(run.stdout.trim(), manifest.version);
+
+  const stagedRuntime = path.join(releaseOne, 'bin', process.platform === 'win32' ? 'runtime.exe' : 'runtime');
+  assert.ok(fs.existsSync(stagedRuntime));
+  const stagedRun = spawnSync(stagedRuntime, [path.join(releaseOne, 'engine.js'), '--version'], {
+    encoding: 'utf8',
+  });
+  assert.equal(stagedRun.status, 0);
+  assert.equal(stagedRun.stdout.trim(), manifest.version);
 });
 
 test('plistText escapes XML entities and activate rolls back failed bootstrap', async testCtx => {
@@ -496,4 +520,194 @@ test('ensureBridgeStarted triggers setup when integrity.json changes within the 
 
   const res = await ensureBridgeStarted({ rootDir, sourceDir: fakeSource, noAutostart: false });
   assert.equal(res.action, 'setup');
+});
+
+test('runtime helpers rank semver, prefer HTTP/2-capable runtimes, and wrap dynamic binaries safely', testCtx => {
+  assert.ok(compareSemver('1.10.0', '1.4.5') > 0);
+  assert.ok(compareSemver('1.4.5', '1.4.2') > 0);
+  assert.equal(compareSemver('v26.13.0', '26.13.0'), 0);
+
+  const home = makeTemp(testCtx);
+  const xdgCache = makeTemp(testCtx);
+  const bunName = process.platform === 'win32' ? 'magpie-bun.exe' : 'magpie-bun';
+  const oldBun = path.join(home, '.cache', 'magpie', 'bun', '1.4.2', bunName);
+  const midBun = path.join(xdgCache, 'magpie', 'bun', '1.4.5', bunName);
+  const newBun = path.join(home, 'Desktop', 'data', 'cache', 'bun', '1.10.0', bunName);
+  for (const filePath of [oldBun, midBun, newBun]) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, 'stub', { mode: 0o755 });
+  }
+
+  const found = findMagpieBuns({ homeDir: home, env: { XDG_CACHE_HOME: xdgCache } });
+  assert.deepEqual(
+    found.map(item => item.version),
+    ['1.10.0', '1.4.5', '1.4.2']
+  );
+
+  const nodeBin = path.join(makeTemp(testCtx), process.platform === 'win32' ? 'node.exe' : 'node');
+  fs.writeFileSync(nodeBin, 'stub', { mode: 0o755 });
+
+  const pickedWithOldBun = selectPreferredRuntime({
+    homeDir: makeTemp(testCtx),
+    env: { PATH: path.dirname(nodeBin) },
+    currentExecPath: nodeBin,
+    exec: cmd => {
+      if (cmd === oldBun) return { status: 0, stdout: '{"bun":"1.4.2","node":null}' };
+      if (cmd === nodeBin) return { status: 0, stdout: '{"bun":null,"node":"22.11.0"}' };
+      if (cmd === '/bin/sh') return { status: 0, stdout: `${nodeBin}\n` };
+      return { status: 1, stdout: '' };
+    },
+  });
+  assert.equal(pickedWithOldBun.kind, 'node');
+  assert.equal(pickedWithOldBun.http2, true);
+
+  const fakeOldHome = makeTemp(testCtx);
+  const fakeOldBun = path.join(fakeOldHome, '.cache', 'magpie', 'bun', '1.4.2', bunName);
+  fs.mkdirSync(path.dirname(fakeOldBun), { recursive: true });
+  fs.writeFileSync(fakeOldBun, 'stub', { mode: 0o755 });
+  const preferredNodeOver142 = selectPreferredRuntime({
+    homeDir: fakeOldHome,
+    env: { PATH: path.dirname(nodeBin) },
+    currentExecPath: nodeBin,
+    exec: cmd => {
+      if (cmd === fakeOldBun) return { status: 0, stdout: '{"bun":"1.4.2","node":null}' };
+      if (cmd === nodeBin) return { status: 0, stdout: '{"bun":null,"node":"22.11.0"}' };
+      if (cmd === '/bin/sh') return { status: 0, stdout: `${nodeBin}\n` };
+      return { status: 1, stdout: '' };
+    },
+  });
+  assert.equal(preferredNodeOver142.kind, 'node');
+  assert.equal(preferredNodeOver142.path, nodeBin);
+
+  const preferred145OverNode = selectPreferredRuntime({
+    homeDir: home,
+    env: { XDG_CACHE_HOME: xdgCache, PATH: path.dirname(nodeBin) },
+    currentExecPath: nodeBin,
+    exec: cmd => {
+      if (cmd === newBun) return { status: 0, stdout: '{"bun":"1.10.0","node":null}' };
+      if (cmd === nodeBin) return { status: 0, stdout: '{"bun":null,"node":"22.11.0"}' };
+      return { status: 1, stdout: '' };
+    },
+  });
+  assert.equal(preferred145OverNode.kind, 'bun');
+  assert.equal(preferred145OverNode.path, newBun);
+
+  if (process.platform !== 'win32') {
+    const wrapperDir = makeTemp(testCtx);
+    const shimRuntime = path.join(wrapperDir, 'shim-node');
+    fs.writeFileSync(shimRuntime, `#!/bin/sh\nexec '${process.execPath.replaceAll("'", "'\\''")}' "$@"\n`, {
+      mode: 0o755,
+    });
+    const destBin = path.join(wrapperDir, 'runtime');
+    const verifyScript = path.join(wrapperDir, 'engine.js');
+    fs.writeFileSync(verifyScript, `console.log('${manifest.version}');\n`);
+    const staged = stageRuntimeBinary(shimRuntime, destBin, verifyScript, manifest.version);
+    assert.equal(staged.mode, 'wrapper');
+    const check = spawnSync(destBin, [verifyScript, '--version'], { encoding: 'utf8' });
+    assert.equal(check.status, 0);
+    assert.equal(check.stdout.trim(), manifest.version);
+  }
+});
+
+test('isRegisteredInMagpie detects node_modules and local plugins.json specs, and copyPayload skips catalog cache', testCtx => {
+  const home = makeTemp(testCtx);
+  const localRepo = path.join(makeTemp(testCtx), 'repo');
+  const copiedTarget = path.join(makeTemp(testCtx), 'target');
+  copyPayload(sourceDir, localRepo);
+  assert.ok(fs.existsSync(path.join(localRepo, 'plugin.js')));
+  assert.ok(fs.existsSync(path.join(localRepo, 'ui', 'page.html')));
+  assert.equal(fs.existsSync(path.join(localRepo, 'ui', 'catalog.runtime.js')), false);
+  assert.equal(isRegisteredInMagpie(localRepo, manifest.name, home, { env: {} }), false);
+
+  const pluginsFile = path.join(home, '.config', 'magpie', 'plugins.json');
+  fs.mkdirSync(path.dirname(pluginsFile), { recursive: true });
+  fs.writeFileSync(
+    pluginsFile,
+    JSON.stringify({
+      plugins: [
+        { spec: 'https://github.com/Hill-1024/Magpie-cursor-agent' },
+        { spec: localRepo },
+      ],
+    })
+  );
+  assert.equal(isRegisteredInMagpie(localRepo, manifest.name, home, { env: {} }), true);
+
+  fs.mkdirSync(copiedTarget, { recursive: true });
+  const fakeBin = path.join(makeTemp(testCtx), 'magpie');
+  fs.writeFileSync(fakeBin, 'stub', { mode: 0o755 });
+  assert.equal(findMagpieBinary({ homeDir: home, env: { MAGPIE_PATH: fakeBin } }), fakeBin);
+});
+
+test('ensureBridgeStarted avoids duplicate setup lock contention, logs setup failures, and upgrades stale Bun 1.4.2 runtimes', async testCtx => {
+  const rootDir = makeTemp(testCtx);
+  const fakeSource = makeTemp(testCtx);
+  fs.writeFileSync(path.join(fakeSource, 'package.json'), JSON.stringify({ version: '9.9.9' }));
+  fs.writeFileSync(
+    path.join(fakeSource, 'install.js'),
+    'console.error("simulated cert failure"); process.exit(1);\n'
+  );
+
+  const lockDir = path.join(rootDir, 'installer.lock');
+  const owner = claimLock(lockDir);
+  const pendingRes = await ensureBridgeStarted({ rootDir, sourceDir: fakeSource, noAutostart: false });
+  assert.equal(pendingRes.action, 'setup-pending');
+  releaseLock(lockDir, owner);
+
+  const prevMagpieBun = process.env.MAGPIE_BUN;
+  process.env.MAGPIE_BUN = process.execPath;
+  let errRes;
+  try {
+    errRes = await ensureBridgeStarted({ rootDir, sourceDir: fakeSource, noAutostart: false });
+  } finally {
+    if (prevMagpieBun === undefined) delete process.env.MAGPIE_BUN;
+    else process.env.MAGPIE_BUN = prevMagpieBun;
+  }
+  assert.equal(errRes.action, 'error');
+  assert.match(errRes.error, /simulated cert failure/);
+  const statusJson = JSON.parse(fs.readFileSync(path.join(rootDir, 'status.json'), 'utf8'));
+  assert.equal(statusJson.state, 'error');
+  assert.match(statusJson.reason, /simulated cert failure/);
+  const logText = fs.readFileSync(path.join(rootDir, 'autostart.log'), 'utf8');
+  assert.match(logText, /simulated cert failure/);
+
+  if (process.platform !== 'win32') {
+    const upgradeRoot = makeTemp(testCtx);
+    const upgradeHome = makeTemp(testCtx);
+    const upgradeSource = makeTemp(testCtx);
+    fs.writeFileSync(path.join(upgradeSource, 'package.json'), JSON.stringify({ version: '9.9.9' }));
+    const staged = path.join(makeTemp(testCtx), 'staged');
+    fs.mkdirSync(path.join(staged, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(staged, 'bridge.js'), '// bridge\n');
+    fs.writeFileSync(path.join(staged, 'engine.js'), '// engine\n');
+    fs.writeFileSync(path.join(staged, 'bin', 'runtime'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    fs.writeFileSync(
+      path.join(upgradeRoot, 'installation.json'),
+      JSON.stringify({
+        version: '9.9.9',
+        release: staged,
+        runtime: { kind: 'bun', version: '1.4.2', http2: false },
+      })
+    );
+    fs.writeFileSync(
+      path.join(upgradeRoot, 'status.json'),
+      JSON.stringify({ version: '9.9.9', state: 'connected' })
+    );
+    const fakeBun145 = path.join(upgradeHome, '.cache', 'magpie', 'bun', '1.4.5', 'magpie-bun');
+    fs.mkdirSync(path.dirname(fakeBun145), { recursive: true });
+    fs.writeFileSync(
+      fakeBun145,
+      '#!/bin/sh\necho \'{"bun":"1.4.5","node":null}\'\n',
+      { mode: 0o755 }
+    );
+    const supLock = path.join(upgradeRoot, 'supervisor.lock');
+    const supOwner = claimLock(supLock);
+    testCtx.after(() => releaseLock(supLock, supOwner));
+    const upgradeRes = await ensureBridgeStarted({
+      rootDir: upgradeRoot,
+      sourceDir: upgradeSource,
+      homeDir: upgradeHome,
+      noAutostart: false,
+    });
+    assert.equal(upgradeRes.action, 'setup');
+  }
 });

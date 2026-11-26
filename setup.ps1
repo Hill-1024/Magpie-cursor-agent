@@ -7,17 +7,31 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 $Runtime = $env:MAGPIE_BUN
 if (-not $Runtime) {
-    $Candidates = @(
-        "$env:USERPROFILE\Desktop\data\cache\bun\*\magpie-bun.exe",
-        "$env:USERPROFILE\.cache\magpie\bun\*\magpie-bun.exe",
-        "$env:LOCALAPPDATA\magpie\bun\*\magpie-bun.exe"
+    $BunRoots = @(
+        "$env:USERPROFILE\Desktop\data\cache\bun",
+        $(if ($env:XDG_CACHE_HOME) { Join-Path $env:XDG_CACHE_HOME "magpie\bun" }),
+        "$env:USERPROFILE\.cache\magpie\bun",
+        "$env:LOCALAPPDATA\magpie\bun",
+        "$env:APPDATA\magpie\bun"
     )
-    foreach ($Pattern in $Candidates) {
-        $Found = Get-Item $Pattern -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($Found) {
-            $Runtime = $Found.FullName
-            break
+    $BestVer = $null
+    foreach ($Root in $BunRoots) {
+        if (-not $Root -or -not (Test-Path $Root)) { continue }
+        Get-ChildItem -Path $Root -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            $Exe = Join-Path $_.FullName "magpie-bun.exe"
+            if (Test-Path $Exe) {
+                try {
+                    $Ver = [version]($_.Name -replace '[^0-9.].*$', '')
+                    if (-not $BestVer -or $Ver -gt $BestVer) {
+                        $BestVer = $Ver
+                        $Runtime = $Exe
+                    }
+                } catch {
+                    if (-not $Runtime) { $Runtime = $Exe }
+                }
+            }
         }
+        if ($Runtime) { break }
     }
 }
 
